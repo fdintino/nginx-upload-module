@@ -1,5 +1,6 @@
 /*
- * Copyright (C) 2008 Valery Kholodkov
+ * Copyright (C) 2006, 2008 Valery Kholodkov
+ * Client body reception code Copyright (c) 2002-2007 Igor Sysoev
  */
 #include <ngx_config.h>
 #include <ngx_core.h>
@@ -17,6 +18,7 @@
 #define NGX_UPLOAD_MALFORMED    -1
 #define NGX_UPLOAD_NOMEM        -2
 #define NGX_UPLOAD_IOERROR      -3
+#define NGX_UPLOAD_SCRIPTERROR  -4
 
 /*
  * State of multipart/form-data parser
@@ -29,6 +31,14 @@ typedef enum {
 	upload_state_finish
 } upload_state_t;
 
+typedef struct {
+    ngx_table_elt_t          value;
+    ngx_array_t             *field_lengths;
+    ngx_array_t             *field_values;
+    ngx_array_t             *value_lengths;
+    ngx_array_t             *value_values;
+} ngx_http_upload_field_template_t;
+
 /*
  * Upload configuration for specific location
  */
@@ -38,6 +48,7 @@ typedef struct {
     ngx_uint_t        store_access;
     size_t            buffer_size;
     size_t            max_header_len;
+    ngx_array_t       *field_templates;
 } ngx_http_upload_loc_conf_t;
 
 /*
@@ -75,7 +86,7 @@ typedef struct ngx_http_upload_ctx_s {
     ngx_file_t          output_file;
     ngx_chain_t         *chain;
     ngx_chain_t         *last;
-    ngx_chain_t         *part_body;
+    ngx_chain_t         *checkpoint;
 
     unsigned int        first_part:1;
     unsigned int        discard_data:1;
@@ -88,19 +99,28 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r);
 static void *ngx_http_upload_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_upload_merge_loc_conf(ngx_conf_t *cf,
     void *parent, void *child);
+static ngx_int_t ngx_http_upload_add_variables(ngx_conf_t *cf);
+static ngx_int_t ngx_http_upload_variable(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v,  uintptr_t data);
 static char *ngx_http_upload_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u);
 static void ngx_http_upload_finish_handler(ngx_http_upload_ctx_t *u);
 static void ngx_http_upload_abort_handler(ngx_http_upload_ctx_t *u);
 
-static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u, u_char *buf, size_t len);
+static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u,
+    u_char *buf, size_t len);
+static ngx_int_t ngx_http_upload_append_field(ngx_http_upload_ctx_t *u,
+    ngx_str_t *name, ngx_str_t *value);
 
 static void ngx_http_read_upload_client_request_body_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r);
 static ngx_int_t ngx_http_process_request_body(ngx_http_request_t *r, ngx_chain_t *body);
 
-ngx_int_t ngx_http_read_upload_client_request_body(ngx_http_request_t *r);
+static ngx_int_t ngx_http_read_upload_client_request_body(ngx_http_request_t *r);
+
+static char *ngx_http_upload_set_form_field(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
 
 /*
  * upload_init_ctx
@@ -235,11 +255,22 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
       offsetof(ngx_http_upload_loc_conf_t, max_header_len),
       NULL },
 
+    /*
+     * Specifies the field to set in altered response body
+     */
+    { ngx_string("upload_set_form_field"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF
+                        |NGX_CONF_TAKE2,
+      ngx_http_upload_set_form_field,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL},
+
       ngx_null_command
 }; /* }}} */
 
 ngx_http_module_t  ngx_http_upload_module_ctx = { /* {{{ */
-    NULL,                                  /* preconfiguration */
+    ngx_http_upload_add_variables,         /* preconfiguration */
     NULL,                                  /* postconfiguration */
 
     NULL,                                  /* create main configuration */
@@ -267,6 +298,13 @@ ngx_module_t  ngx_http_upload_module = { /* {{{ */
     NGX_MODULE_V1_PADDING
 }; /* }}} */
 
+static ngx_str_t  ngx_http_upload_field_name = ngx_string("upload_field_name");
+static ngx_str_t  ngx_http_upload_content_type = ngx_string("upload_content_type");
+static ngx_str_t  ngx_http_upload_file_name = ngx_string("upload_file_name");
+static ngx_str_t  ngx_http_upload_tmp_path = ngx_string("upload_tmp_path");
+
+static ngx_str_t  ngx_http_upload_empty_field_value = ngx_null_string;
+
 static ngx_int_t /* {{{ ngx_http_upload_handler */
 ngx_http_upload_handler(ngx_http_request_t *r)
 {
@@ -291,12 +329,16 @@ ngx_http_upload_handler(ngx_http_request_t *r)
     }
 
     // Check whether Content-Type header is missing
-    if(r->headers_in.content_type == 0)
+    if(r->headers_in.content_type == NULL) {
+        ngx_log_error(NGX_LOG_ERR, u->log, ngx_errno,
+                      "missing Content-Type header");
         return NGX_HTTP_BAD_REQUEST;
+    }
 
     u->request = r;
     u->log = r->connection->log;
     u->pool = r->pool;
+    u->chain = u->last = u->checkpoint = NULL;
 
     upload_init_ctx(u);
 
@@ -328,6 +370,9 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
     ngx_buf_t                      *b;
     ngx_chain_t                    *cl;
 
+    /*
+     * Append final boundary
+     */
     b = ngx_create_temp_buf(r->pool, ctx->boundary.len + 2);
 
     if (b == NULL) {
@@ -406,12 +451,11 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
     ngx_file_t  *file = &u->output_file;
     ngx_path_t  *path = ulcf->store_path;
     uint32_t    n;
-    ngx_int_t   len;
-    ngx_buf_t   *b;
-    ngx_chain_t *cl;
+    ngx_uint_t  i;
+    ngx_int_t   rc;
     ngx_err_t   err;
-
-    u->part_body = NULL;
+    ngx_http_upload_field_template_t    *t;
+    ngx_str_t   field_name, field_value;
 
     if(u->is_file) {
         file->name.len = path->name.len + 1 + path->len + 10;
@@ -455,44 +499,37 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
             return NGX_UPLOAD_IOERROR;
         }
 
-    }
+        if(ulcf->field_templates) {
+            t = ulcf->field_templates->elts;
+            for (i = 0; i < ulcf->field_templates->nelts; i++) {
 
-    len = u->first_part ? u->boundary.len - 2 : u->boundary.len;
+                if (t[i].field_lengths == NULL) {
+                    field_name = t[i].value.key;
+                }else{
+                    if (ngx_http_script_run(r, &field_name, t[i].field_lengths->elts, 0,
+                        t[i].field_values->elts) == NULL)
+                    {
+                        return NGX_UPLOAD_SCRIPTERROR;
+                    }
+                }
 
-    len += sizeof("\r\nContent-Disposition: form-data; name=\"") - 1;
+                if (t[i].value_lengths == NULL) {
+                    field_value = t[i].value.value;
+                }else{
+                    if (ngx_http_script_run(r, &field_value, t[i].value_lengths->elts, 0,
+                        t[i].value_values->elts) == NULL)
+                    {
+                        return NGX_UPLOAD_SCRIPTERROR;
+                    }
+                }
 
-    len += u->field_name.len;
+                rc = ngx_http_upload_append_field(u, &field_name, &field_value);
 
-    len += sizeof("\"\r\n\r\n") - 1;
+                if(rc != NGX_OK)
+                    return rc;
+            }
+        }
 
-    if(u->is_file)
-        len += file->name.len + 1 + u->content_type.len + 1 + u->file_name.len;
-
-    b = ngx_create_temp_buf(u->pool, len);
-
-    if (b == NULL) {
-        return NGX_UPLOAD_NOMEM;
-    }
-
-    cl = ngx_alloc_chain_link(u->pool);
-    if (cl == NULL) {
-        return NGX_UPLOAD_NOMEM;
-    }
-
-    b->last_in_chain = 0;
-
-    cl->buf = b;
-    cl->next = NULL;
-
-    if(u->chain == NULL) {
-        u->chain = cl;
-        u->last = cl;
-    }else{
-        u->last->next = cl;
-        u->last = cl;
-    }
-
-    if(u->is_file)
         ngx_log_error(NGX_LOG_INFO, u->log, 0
             , "started uploading file \"%s\" to \"%s\" (field \"%s\", content type \"%s\")"
             , u->file_name.data
@@ -500,14 +537,22 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
             , u->field_name.data
             , u->content_type.data
             );
+    }else{
+        /*
+         * Here we do a small hack: the content of a normal field
+         * is not known until ngx_http_upload_flush_output_buffer
+         * is called. We pass empty field value to simplify things.
+         */
+        rc = ngx_http_upload_append_field(u, &u->field_name, &ngx_http_upload_empty_field_value);
+
+        if(rc != NGX_OK)
+            return rc;
+    }
 
     return NGX_OK;
 } /* }}} */
 
 static void ngx_http_upload_finish_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
-    ngx_buf_t   *b;
-    ngx_file_t  *file = &u->output_file;
-
     if(u->is_file) {
         ngx_close_file(u->output_file.fd);
 
@@ -518,44 +563,17 @@ static void ngx_http_upload_finish_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
             );
     }
 
-    b = u->last->buf;
-    
-    b->last = ngx_cpymem(b->last, u->first_part ? u->boundary.data + 2 : u->boundary.data,
-        u->first_part ? u->boundary.len - 2 : u->boundary.len);
-
-    b->last = ngx_cpymem(b->last, "\r\nContent-Disposition: form-data; name=\"", sizeof("\r\nContent-Disposition: form-data; name=\"") - 1);
-
-    b->last = ngx_cpymem(b->last, u->field_name.data, u->field_name.len);
-
-    b->last = ngx_cpymem(b->last, "\"\r\n\r\n", sizeof("\"\r\n\r\n") - 1);
-
-    if(u->is_file) {
-        b->last = ngx_cpymem(b->last, file->name.data, file->name.len);
-
-        *b->last++ = ' ';
-
-        b->last = ngx_cpymem(b->last, u->content_type.data, u->content_type.len);
-
-        *b->last++ = ' ';
-
-        b->last = ngx_cpymem(b->last, u->file_name.data, u->file_name.len);
-    }
-
-    if(u->part_body) {
-        u->last->next = u->part_body;
-        u->last = u->part_body;
-    }
+    // Checkpoint current output chain state
+    u->checkpoint = u->last;
 } /* }}} */
 
 static void ngx_http_upload_abort_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
-    ngx_buf_t   *b;
-
     if(u->is_file) {
 
         ngx_close_file(u->output_file.fd);
 
         if(ngx_delete_file(u->output_file.name.data) == NGX_FILE_ERROR) { 
-            ngx_log_error(NGX_LOG_ERR, u->log, 0
+            ngx_log_error(NGX_LOG_ERR, u->log, ngx_errno
                 , "aborted uploading file \"%s\" to \"%s\", failed to remove destination file"
                 , u->file_name.data
                 , u->output_file.name.data);
@@ -567,23 +585,13 @@ static void ngx_http_upload_abort_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
         }
     }
 
-    b = u->last->buf;
-    
-    b->last = ngx_cpymem(b->last, u->first_part ? u->boundary.data + 2 : u->boundary.data,
-        u->first_part ? u->boundary.len - 2 : u->boundary.len);
-
-    b->last = ngx_cpymem(b->last, "\r\nContent-Disposition: form-data; name=\"", sizeof("\r\nContent-Disposition: form-data; name=\"") - 1);
-
-    b->last = ngx_cpymem(b->last, u->field_name.data, u->field_name.len);
-
-    b->last = ngx_cpymem(b->last, "\"\r\n\r\n", sizeof("\"\r\n\r\n") - 1);
-
-    if(u->is_file)
-        *b->last++ = '-';
-
-    if(u->part_body) {
-        u->last->next = u->part_body;
-        u->last = u->part_body;
+    // Rollback output chain to the previous consistant state
+    if(u->checkpoint != NULL) {
+        u->last = u->checkpoint;
+        u->last->next = NULL;
+    }else{
+        u->chain = u->last = NULL;
+        u->first_part = 1;
     }
 } /* }}} */
 
@@ -593,8 +601,8 @@ static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u, u
 
     if(u->is_file) {
         if(ngx_write_file(&u->output_file, buf, len, u->output_file.offset) == NGX_ERROR) {
-            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                           "write failed: %s", u->output_file.name.data);
+            ngx_log_error(NGX_LOG_ERR, u->log, ngx_errno,
+                           "write to file \"%s\" failed", u->output_file.name.data);
             return NGX_UPLOAD_IOERROR;
         }else
             return NGX_OK;
@@ -615,12 +623,75 @@ static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u, u
         cl->buf = b;
         cl->next = NULL;
 
-        u->part_body = cl;
-
         b->last = ngx_cpymem(b->last, buf, len);
+
+        if(u->chain == NULL) {
+            u->chain = cl;
+            u->last = cl;
+        }else{
+            u->last->next = cl;
+            u->last = cl;
+        }
 
         return NGX_OK;
     }
+} /* }}} */
+
+static ngx_int_t /* {{{ ngx_http_upload_append_field */
+ngx_http_upload_append_field(ngx_http_upload_ctx_t *u, ngx_str_t *name, ngx_str_t *value)
+{
+    ngx_int_t   len;
+    ngx_chain_t *cl;
+    ngx_buf_t *b;
+
+    len = u->first_part ? u->boundary.len - 2 : u->boundary.len;
+
+    len += sizeof("\r\nContent-Disposition: form-data; name=\"") - 1;
+
+    len += name->len;
+
+    len += sizeof("\"\r\n\r\n") - 1;
+
+    len += value->len;
+
+    b = ngx_create_temp_buf(u->pool, len);
+
+    if (b == NULL) {
+        return NGX_UPLOAD_NOMEM;
+    }
+
+    cl = ngx_alloc_chain_link(u->pool);
+    if (cl == NULL) {
+        return NGX_UPLOAD_NOMEM;
+    }
+
+    b->last = ngx_cpymem(b->last, u->first_part ? u->boundary.data + 2 : u->boundary.data,
+        u->first_part ? u->boundary.len - 2 : u->boundary.len);
+
+    b->last = ngx_cpymem(b->last, "\r\nContent-Disposition: form-data; name=\"", sizeof("\r\nContent-Disposition: form-data; name=\"") - 1);
+
+    b->last = ngx_cpymem(b->last, name->data, name->len);
+
+    b->last = ngx_cpymem(b->last, "\"\r\n\r\n", sizeof("\"\r\n\r\n") - 1);
+
+    b->last = ngx_cpymem(b->last, value->data, value->len);
+
+    b->last_in_chain = 0;
+
+    cl->buf = b;
+    cl->next = NULL;
+
+    if(u->chain == NULL) {
+        u->chain = cl;
+        u->last = cl;
+    }else{
+        u->last->next = cl;
+        u->last = cl;
+    }
+
+    u->first_part = 0;
+
+    return NGX_OK;
 } /* }}} */
 
 static void * /* {{{ ngx_http_upload_create_loc_conf */
@@ -664,6 +735,155 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_size_value(conf->max_header_len,
                               prev->max_header_len,
                               (size_t) 512);
+
+    return NGX_CONF_OK;
+} /* }}} */
+
+static ngx_int_t /* {{{ ngx_http_upload_add_variables */
+ngx_http_upload_add_variables(ngx_conf_t *cf)
+{
+    ngx_http_variable_t  *var;
+
+    var = ngx_http_add_variable(cf, &ngx_http_upload_field_name,
+        NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH);
+
+    if (var == NULL) {
+        return NGX_ERROR;
+    }
+
+    var->get_handler = ngx_http_upload_variable;
+    var->data = offsetof(ngx_http_upload_ctx_t, field_name);
+
+    var = ngx_http_add_variable(cf, &ngx_http_upload_content_type,
+        NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH);
+
+    if (var == NULL) {
+        return NGX_ERROR;
+    }
+
+    var->get_handler = ngx_http_upload_variable;
+    var->data = offsetof(ngx_http_upload_ctx_t, content_type);
+
+    var = ngx_http_add_variable(cf, &ngx_http_upload_file_name,
+        NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH);
+    if (var == NULL) {
+        return NGX_ERROR;
+    }
+
+    var->get_handler = ngx_http_upload_variable;
+    var->data = offsetof(ngx_http_upload_ctx_t, file_name);
+
+    var = ngx_http_add_variable(cf, &ngx_http_upload_tmp_path,
+        NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH);
+    if (var == NULL) {
+        return NGX_ERROR;
+    }
+
+    var->get_handler = ngx_http_upload_variable;
+    var->data = offsetof(ngx_http_upload_ctx_t, output_file.name);
+
+    return NGX_OK;
+} /* }}} */
+
+static ngx_int_t /* {{{ ngx_http_upload_variable */
+ngx_http_upload_variable(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v,  uintptr_t data)
+{
+    ngx_http_upload_ctx_t  *u;
+    ngx_str_t              *value;
+
+    v->valid = 1;
+    v->no_cacheable = 0;
+    v->not_found = 0;
+
+    u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
+
+    value = (ngx_str_t *) ((char *) u + data);
+
+    v->data = value->data;
+    v->len = value->len;
+
+    return NGX_OK;
+} /* }}} */
+
+static char * /* {{{ ngx_http_upload_set_form_field */
+ngx_http_upload_set_form_field(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_upload_loc_conf_t *ulcf = conf;
+
+    ngx_int_t                   n;
+    ngx_str_t                  *value;
+    ngx_http_script_compile_t   sc;
+    ngx_http_upload_field_template_t *h;
+
+    value = cf->args->elts;
+
+    if (ulcf->field_templates == NULL) {
+        ulcf->field_templates = ngx_array_create(cf->pool, 1,
+                                        sizeof(ngx_http_upload_field_template_t));
+        if (ulcf->field_templates == NULL) {
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    h = ngx_array_push(ulcf->field_templates);
+    if (h == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    h->value.hash = 1;
+    h->value.key = value[1];
+    h->value.value = value[2];
+    h->field_lengths = NULL;
+    h->field_values = NULL;
+    h->value_lengths = NULL;
+    h->value_values = NULL;
+
+    /*
+     * Compile field name
+     */
+    n = ngx_http_script_variables_count(&value[1]);
+
+    if (n == 0) {
+        return NGX_CONF_OK;
+    }
+
+    ngx_memzero(&sc, sizeof(ngx_http_script_compile_t));
+
+    sc.cf = cf;
+    sc.source = &value[1];
+    sc.lengths = &h->field_lengths;
+    sc.values = &h->field_values;
+    sc.variables = n;
+    sc.complete_lengths = 1;
+    sc.complete_values = 1;
+
+    if (ngx_http_script_compile(&sc) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
+
+    /*
+     * Compile field value
+     */
+    n = ngx_http_script_variables_count(&value[2]);
+
+    if (n == 0) {
+        return NGX_CONF_OK;
+    }
+
+    ngx_memzero(&sc, sizeof(ngx_http_script_compile_t));
+
+    sc.cf = cf;
+    sc.source = &value[2];
+    sc.lengths = &h->value_lengths;
+    sc.values = &h->value_values;
+    sc.variables = n;
+    sc.complete_lengths = 1;
+    sc.complete_values = 1;
+
+    if (ngx_http_script_compile(&sc) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
 
     return NGX_CONF_OK;
 } /* }}} */
@@ -849,7 +1069,7 @@ ngx_http_read_upload_client_request_body(ngx_http_request_t *r) {
     return ngx_http_do_read_upload_client_request_body(r);
 } /* }}} */
 
-static void /* {{{ */
+static void /* {{{ ngx_http_read_upload_client_request_body_handler */
 ngx_http_read_upload_client_request_body_handler(ngx_http_request_t *r)
 {
     ngx_int_t  rc;
@@ -870,7 +1090,7 @@ ngx_http_read_upload_client_request_body_handler(ngx_http_request_t *r)
     }
 } /* }}} */
 
-static ngx_int_t /* {{{ */
+static ngx_int_t /* {{{ ngx_http_do_read_upload_client_request_body */
 ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
 {
     size_t                     size;
@@ -900,7 +1120,7 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
                         return NGX_HTTP_BAD_REQUEST;
                     case NGX_UPLOAD_IOERROR:
                         return NGX_HTTP_SERVICE_UNAVAILABLE;
-                    case NGX_UPLOAD_NOMEM:
+                    case NGX_UPLOAD_NOMEM: case NGX_UPLOAD_SCRIPTERROR:
                     default:
                         return NGX_HTTP_INTERNAL_SERVER_ERROR;
                 }
@@ -979,7 +1199,7 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
     return ngx_http_upload_body_handler(r);
 } /* }}} */
 
-static ngx_int_t /* {{{ */
+static ngx_int_t /* {{{ ngx_http_process_request_body */
 ngx_http_process_request_body(ngx_http_request_t *r, ngx_chain_t *body)
 {
     ngx_int_t rc;
@@ -1049,7 +1269,7 @@ static ngx_int_t upload_parse_part_header(ngx_http_upload_ctx_t *upload_ctx, cha
             upload_ctx->file_name.len = filename_end - filename_start;
             upload_ctx->file_name.data = ngx_pcalloc(upload_ctx->pool, upload_ctx->file_name.len + 1);
             
-            if(upload_ctx->file_name.data == 0)
+            if(upload_ctx->file_name.data == NULL)
                 return NGX_UPLOAD_NOMEM;
 
             strncpy((char*)upload_ctx->file_name.data, filename_start, filename_end - filename_start);
@@ -1076,7 +1296,7 @@ static ngx_int_t upload_parse_part_header(ngx_http_upload_ctx_t *upload_ctx, cha
                 upload_ctx->field_name.len = fieldname_end - fieldname_start;
                 upload_ctx->field_name.data = ngx_pcalloc(upload_ctx->pool, upload_ctx->field_name.len + 1);
 
-                if(upload_ctx->field_name.data == 0)
+                if(upload_ctx->field_name.data == NULL)
                     return NGX_UPLOAD_NOMEM;
 
                 strncpy((char*)upload_ctx->field_name.data, fieldname_start, fieldname_end - fieldname_start);
@@ -1096,7 +1316,7 @@ static ngx_int_t upload_parse_part_header(ngx_http_upload_ctx_t *upload_ctx, cha
 
         upload_ctx->content_type.data = ngx_pcalloc(upload_ctx->pool, upload_ctx->content_type.len + 1);
         
-        if(upload_ctx->content_type.data == 0)
+        if(upload_ctx->content_type.data == NULL)
             return NGX_UPLOAD_NOMEM; // Unable to allocate memory for string
 
         strncpy((char*)upload_ctx->content_type.data, content_type_str, upload_ctx->content_type.len);
@@ -1107,13 +1327,13 @@ static ngx_int_t upload_parse_part_header(ngx_http_upload_ctx_t *upload_ctx, cha
 
 static void upload_discard_part_attributes(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
     upload_ctx->file_name.len = 0;
-    upload_ctx->file_name.data = 0;
+    upload_ctx->file_name.data = NULL;
 
     upload_ctx->field_name.len = 0;
-    upload_ctx->field_name.data = 0;
+    upload_ctx->field_name.data = NULL;
 
     upload_ctx->content_type.len = 0;
-    upload_ctx->content_type.data = 0;
+    upload_ctx->content_type.data = NULL;
 } /* }}} */
 
 static ngx_int_t upload_start_file(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
@@ -1132,7 +1352,6 @@ static void upload_finish_file(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
     upload_discard_part_attributes(upload_ctx);
 
     upload_ctx->discard_data = 0;
-    upload_ctx->first_part = 0;
 } /* }}} */
 
 static void upload_abort_file(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
@@ -1142,7 +1361,6 @@ static void upload_abort_file(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
     upload_discard_part_attributes(upload_ctx);
 
     upload_ctx->discard_data = 0;
-    upload_ctx->first_part = 0;
 } /* }}} */
 
 static void upload_flush_output_buffer(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
@@ -1162,13 +1380,13 @@ void upload_init_ctx(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
 	upload_ctx->state = upload_state_boundary_seek;
 
     upload_ctx->content_type.len = 0;
-    upload_ctx->content_type.data = 0;
+    upload_ctx->content_type.data = NULL;
 
     upload_ctx->field_name.len = 0;
-    upload_ctx->field_name.data = 0;
+    upload_ctx->field_name.data = NULL;
 
     upload_ctx->file_name.len = 0;
-    upload_ctx->file_name.data = 0;
+    upload_ctx->file_name.data = NULL;
 
     upload_ctx->discard_data = 0;
 
@@ -1191,20 +1409,20 @@ void upload_shutdown_ctx(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
 } /* }}} */
 
 ngx_int_t upload_start(ngx_http_upload_ctx_t *upload_ctx, ngx_http_upload_loc_conf_t *ulcf) { /* {{{ */
-	if(upload_ctx == 0)
+	if(upload_ctx == NULL)
 		return NGX_ERROR;
 
 	upload_ctx->header_accumulator = ngx_pcalloc(upload_ctx->pool, ulcf->max_header_len + 1);
 
-	if(upload_ctx->header_accumulator == 0)
+	if(upload_ctx->header_accumulator == NULL)
 		return NGX_ERROR;
 
 	upload_ctx->header_accumulator_pos = upload_ctx->header_accumulator;
 	upload_ctx->header_accumulator_end = upload_ctx->header_accumulator + ulcf->max_header_len;
 
-	upload_ctx->output_buffer = (u_char*)ngx_pcalloc(upload_ctx->pool, ulcf->buffer_size);
+	upload_ctx->output_buffer = ngx_pcalloc(upload_ctx->pool, ulcf->buffer_size);
 
-	if(upload_ctx->output_buffer == 0)
+	if(upload_ctx->output_buffer == NULL)
 		return NGX_ERROR;
 
     upload_ctx->output_buffer_pos = upload_ctx->output_buffer;
@@ -1224,7 +1442,7 @@ ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ngx_str_t
 
     upload_ctx->boundary.data = 0;
 
-    if(mime_type_end_ptr == 0) {
+    if(mime_type_end_ptr == NULL) {
         ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
                        "no boundary found in Content-Type");
         return NGX_UPLOAD_MALFORMED;
@@ -1238,7 +1456,7 @@ ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ngx_str_t
 
     boundary_start_ptr = strstr(mime_type_end_ptr, BOUNDARY_STRING);
 
-    if(boundary_start_ptr == 0) {
+    if(boundary_start_ptr == NULL) {
         ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
                        "no boundary found in Content-Type");
         return NGX_UPLOAD_MALFORMED; // No boundary found
@@ -1256,7 +1474,8 @@ ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ngx_str_t
     // Allocate memory for entire boundary plus \r\n plus terminating character
     upload_ctx->boundary.len = boundary_end_ptr - boundary_start_ptr + 4;
     upload_ctx->boundary.data = ngx_pcalloc(upload_ctx->pool, upload_ctx->boundary.len + 1);
-    if(upload_ctx->boundary.data == 0)
+
+    if(upload_ctx->boundary.data == NULL)
         return NGX_UPLOAD_NOMEM;
 
     strncpy((char*)upload_ctx->boundary.data + 4, boundary_start_ptr, boundary_end_ptr - boundary_start_ptr);
