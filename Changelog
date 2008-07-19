@@ -1,0 +1,11 @@
+
+Version 2.0.1
+ * Fixed crash in logging filename while aborting upload
+ * Added feasible debug logging
+ * Added support for variables to generate form fields
+   in resulting request body
+ * Added missing logging of errno after write failures
+ * Simplified upload abortion logic; simply discarding
+   already added fields
+ * Now returning explicit error code after script failures
+   to be able to generate Internal server error
