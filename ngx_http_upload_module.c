@@ -557,12 +557,12 @@ static void ngx_http_upload_abort_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
         if(ngx_delete_file(u->output_file.name.data) == NGX_FILE_ERROR) { 
             ngx_log_error(NGX_LOG_ERR, u->log, 0
                 , "aborted uploading file \"%s\" to \"%s\", failed to remove destination file"
-                , u->file_name
+                , u->file_name.data
                 , u->output_file.name.data);
         } else {
             ngx_log_error(NGX_LOG_ALERT, u->log, 0
                 , "aborted uploading file \"%s\" to \"%s\", dest file removed"
-                , u->file_name
+                , u->file_name.data
                 , u->output_file.name.data);
         }
     }
@@ -592,9 +592,11 @@ static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u, u
     ngx_chain_t                    *cl;
 
     if(u->is_file) {
-        if(ngx_write_file(&u->output_file, buf, len, u->output_file.offset) == NGX_ERROR)
-            return NGX_ERROR;
-        else
+        if(ngx_write_file(&u->output_file, buf, len, u->output_file.offset) == NGX_ERROR) {
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                           "write failed: %s", u->output_file.name.data);
+            return NGX_UPLOAD_IOERROR;
+        }else
             return NGX_OK;
     }else{
         b = ngx_create_temp_buf(u->pool, len);
@@ -1013,8 +1015,11 @@ static ngx_int_t upload_parse_part_header(ngx_http_upload_ctx_t *upload_ctx, cha
         p += strspn(p, " ");
         
         if(strncasecmp(FORM_DATA_STRING, p, sizeof(FORM_DATA_STRING)-1) && 
-                strncasecmp(ATTACHMENT_STRING, p, sizeof(ATTACHMENT_STRING)-1))
+                strncasecmp(ATTACHMENT_STRING, p, sizeof(ATTACHMENT_STRING)-1)) {
+            ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                           "Content-Disposition is not form-data or attachment");
             return NGX_UPLOAD_MALFORMED;
+        }
 
         filename_start = strstr(p, FILENAME_STRING);
 
@@ -1025,8 +1030,11 @@ static ngx_int_t upload_parse_part_header(ngx_http_upload_ctx_t *upload_ctx, cha
 
             filename_end = filename_start + strcspn(filename_start, "\"");
 
-            if(*filename_end != '\"')
+            if(*filename_end != '\"') {
+                ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                               "malformed filename in part header");
                 return NGX_UPLOAD_MALFORMED;
+            }
 
             /*
              * IE sends full path, strip path from filename 
@@ -1059,8 +1067,11 @@ static ngx_int_t upload_parse_part_header(ngx_http_upload_ctx_t *upload_ctx, cha
             if(fieldname_start != filename_start) {
                 fieldname_end = fieldname_start + strcspn(fieldname_start, "\"");
 
-                if(*fieldname_end != '\"')
+                if(*fieldname_end != '\"') {
+                    ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                                   "malformed filename in part header");
                     return NGX_UPLOAD_MALFORMED;
+                }
 
                 upload_ctx->field_name.len = fieldname_end - fieldname_start;
                 upload_ctx->field_name.data = ngx_pcalloc(upload_ctx->pool, upload_ctx->field_name.len + 1);
@@ -1077,8 +1088,11 @@ static ngx_int_t upload_parse_part_header(ngx_http_upload_ctx_t *upload_ctx, cha
         content_type_str += strspn(content_type_str, " ");
         upload_ctx->content_type.len = header_end - content_type_str;
         
-        if(upload_ctx->content_type.len == 0)
+        if(upload_ctx->content_type.len == 0) {
+            ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                           "empty Content-Type in part header");
             return NGX_UPLOAD_MALFORMED; // Empty Content-Type field
+        }
 
         upload_ctx->content_type.data = ngx_pcalloc(upload_ctx->pool, upload_ctx->content_type.len + 1);
         
@@ -1210,22 +1224,34 @@ ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ngx_str_t
 
     upload_ctx->boundary.data = 0;
 
-    if(mime_type_end_ptr == 0)
-        return NGX_UPLOAD_MALFORMED; // No boundary found
+    if(mime_type_end_ptr == 0) {
+        ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                       "no boundary found in Content-Type");
+        return NGX_UPLOAD_MALFORMED;
+    }
 
-    if(strncasecmp(MULTIPART_FORM_DATA_STRING, (char*)content_type->data, (u_char*)mime_type_end_ptr - content_type->data - 1))
-        return NGX_UPLOAD_MALFORMED; // Content is not a multipart/form-data 
+    if(strncasecmp(MULTIPART_FORM_DATA_STRING, (char*)content_type->data, (u_char*)mime_type_end_ptr - content_type->data - 1)) {
+        ngx_log_debug1(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                       "Content-Type is not multipart/form-data: %s", content_type->data);
+        return NGX_UPLOAD_MALFORMED;
+    }
 
     boundary_start_ptr = strstr(mime_type_end_ptr, BOUNDARY_STRING);
 
-    if(boundary_start_ptr == 0)
+    if(boundary_start_ptr == 0) {
+        ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                       "no boundary found in Content-Type");
         return NGX_UPLOAD_MALFORMED; // No boundary found
+    }
 
     boundary_start_ptr += sizeof(BOUNDARY_STRING) - 1;
     boundary_end_ptr = boundary_start_ptr + strcspn(boundary_start_ptr, " ;\n\r");
 
-    if(boundary_end_ptr == boundary_start_ptr)
-        return NGX_UPLOAD_MALFORMED; // Boundary is empty
+    if(boundary_end_ptr == boundary_start_ptr) {
+        ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                       "boundary is empty");
+        return NGX_UPLOAD_MALFORMED;
+    }
 
     // Allocate memory for entire boundary plus \r\n plus terminating character
     upload_ctx->boundary.len = boundary_end_ptr - boundary_start_ptr + 4;
