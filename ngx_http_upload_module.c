@@ -1003,7 +1003,7 @@ ngx_http_read_upload_client_request_body(ngx_http_request_t *r) {
 
         rb->rest = r->headers_in.content_length_n - preread;
 
-        if (rb->rest <= (size_t) (b->end - b->last)) {
+        if (rb->rest <= (off_t) (b->end - b->last)) {
 
             /* the whole request body may be placed in r->header_in */
 
@@ -1027,7 +1027,7 @@ ngx_http_read_upload_client_request_body(ngx_http_request_t *r) {
     size = clcf->client_body_buffer_size;
     size += size >> 2;
 
-    if (rb->rest < (size_t) size) {
+    if (rb->rest < (ssize_t) size) {
         size = rb->rest;
 
         if (r->request_body_in_single_buf) {
@@ -1135,8 +1135,8 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
 
             size = rb->buf->end - rb->buf->last;
 
-            if (size > rb->rest) {
-                size = rb->rest;
+            if ((off_t)size > rb->rest) {
+                size = (size_t)rb->rest;
             }
 
             n = c->recv(c, rb->buf->last, size);
