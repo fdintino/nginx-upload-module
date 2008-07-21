@@ -1,6 +1,7 @@
 /*
  * Copyright (C) 2006, 2008 Valery Kholodkov
  * Client body reception code Copyright (c) 2002-2007 Igor Sysoev
+ * Temporary file name generation code Copyright (c) 2002-2007 Igor Sysoev
  */
 #include <ngx_config.h>
 #include <ngx_core.h>
@@ -31,6 +32,9 @@ typedef enum {
 	upload_state_finish
 } upload_state_t;
 
+/*
+ * Template for a field to generate in output form
+ */
 typedef struct {
     ngx_table_elt_t          value;
     ngx_array_t             *field_lengths;
@@ -218,7 +222,7 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
      * Specifies base path of file store
      */
     { ngx_string("upload_store"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1234,
       ngx_conf_set_path_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_upload_loc_conf_t, store_path),
@@ -228,7 +232,7 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
      * Specifies the access mode for files in store
      */
     { ngx_string("upload_store_access"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE123,
       ngx_conf_set_access_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_upload_loc_conf_t, store_access),
@@ -495,7 +499,7 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
             }
 
             ngx_log_error(NGX_LOG_ERR, u->log, ngx_errno,
-                          "failed to create output file for \"%s\"", u->file_name.data);
+                          "failed to create output file \"%s\" for \"%s\"", file->name.data, u->file_name.data);
             return NGX_UPLOAD_IOERROR;
         }
 
@@ -704,7 +708,7 @@ ngx_http_upload_create_loc_conf(ngx_conf_t *cf)
         return NGX_CONF_ERROR;
     }
 
-    conf->store_access = 0600;
+    conf->store_access = NGX_CONF_UNSET_UINT;
 
     conf->buffer_size = NGX_CONF_UNSET_SIZE;
     conf->max_header_len = NGX_CONF_UNSET_SIZE;
@@ -1190,8 +1194,18 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
         ngx_del_timer(c->read);
     }
 
-    if (ngx_http_process_request_body(r, rb->to_write) != NGX_OK) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    rc = ngx_http_process_request_body(r, rb->to_write);
+
+    switch(rc) {
+        case NGX_OK:
+            break;
+        case NGX_UPLOAD_MALFORMED:
+            return NGX_HTTP_BAD_REQUEST;
+        case NGX_UPLOAD_IOERROR:
+            return NGX_HTTP_SERVICE_UNAVAILABLE;
+        case NGX_UPLOAD_NOMEM: case NGX_UPLOAD_SCRIPTERROR:
+        default:
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
     upload_shutdown_ctx(u);

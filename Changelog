@@ -1,4 +1,13 @@
 
+Version 2.0.3
+ * upload_store directive was not able to receive more than one argument.
+   As a result no hashed dirs for file uploads were possible.
+ * upload_store_access directive did not work completely.
+   Thanks to Brian Moran.
+ * In case of any errors at the last chunk of request body only 500 Internal Server Error
+   was generated intead of 400 Bad Request and 503 Service Unavailable.
+ * Fixed copyrights for temporary file name generation code
+
 Version 2.0.2
  * Fixed crash in logging filename while aborting upload
  * Added feasible debug logging
