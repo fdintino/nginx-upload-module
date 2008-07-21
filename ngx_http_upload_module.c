@@ -44,6 +44,18 @@ typedef struct {
 } ngx_http_upload_field_template_t;
 
 /*
+ * Filter for fields in output form
+ */
+typedef struct {
+#if (NGX_PCRE)
+    ngx_regex_t              *regex;
+    ngx_int_t                ncaptures;
+#else
+    ngx_str_t                name;
+#endif
+} ngx_http_upload_field_filter_t;
+
+/*
  * Upload configuration for specific location
  */
 typedef struct {
@@ -53,6 +65,7 @@ typedef struct {
     size_t            buffer_size;
     size_t            max_header_len;
     ngx_array_t       *field_templates;
+    ngx_array_t       *field_filters;
 } ngx_http_upload_loc_conf_t;
 
 /*
@@ -124,6 +137,8 @@ static ngx_int_t ngx_http_process_request_body(ngx_http_request_t *r, ngx_chain_
 static ngx_int_t ngx_http_read_upload_client_request_body(ngx_http_request_t *r);
 
 static char *ngx_http_upload_set_form_field(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
+static char *ngx_http_upload_pass_form_field(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 
 /*
@@ -266,6 +281,17 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF
                         |NGX_CONF_TAKE2,
       ngx_http_upload_set_form_field,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL},
+
+    /*
+     * Specifies the field to pass to backend
+     */
+    { ngx_string("upload_pass_form_field"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF
+                        |NGX_CONF_TAKE1,
+      ngx_http_upload_pass_form_field,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL},
@@ -459,7 +485,9 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
     ngx_int_t   rc;
     ngx_err_t   err;
     ngx_http_upload_field_template_t    *t;
+    ngx_http_upload_field_filter_t    *f;
     ngx_str_t   field_name, field_value;
+    ngx_uint_t  pass_field;
 
     if(u->is_file) {
         file->name.len = path->name.len + 1 + path->len + 10;
@@ -542,15 +570,42 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
             , u->content_type.data
             );
     }else{
-        /*
-         * Here we do a small hack: the content of a normal field
-         * is not known until ngx_http_upload_flush_output_buffer
-         * is called. We pass empty field value to simplify things.
-         */
-        rc = ngx_http_upload_append_field(u, &u->field_name, &ngx_http_upload_empty_field_value);
+        pass_field = 0;
 
-        if(rc != NGX_OK)
-            return rc;
+        if(ulcf->field_filters) {
+            f = ulcf->field_filters->elts;
+            for (i = 0; i < ulcf->field_filters->nelts; i++) {
+#if (NGX_PCRE)
+                rc = ngx_regex_exec(f[i].regex, &u->field_name, NULL, 0);
+
+                if (rc != NGX_REGEX_NO_MATCHED && rc < 0) {
+                    return NGX_UPLOAD_SCRIPTERROR;
+                }
+
+                /*
+                 * If at least one filter succeeds, we pass the field
+                 */
+                if(rc == 0)
+                    pass_field = 1;
+#else
+                if(ngx_strncmp(f[i].name.data, u->field_name.data, u->field_name.len) == 0)
+                    pass_field = 1;
+#endif
+            }
+        }
+
+        if(pass_field) { 
+            /*
+             * Here we do a small hack: the content of a normal field
+             * is not known until ngx_http_upload_flush_output_buffer
+             * is called. We pass empty field value to simplify things.
+             */
+            rc = ngx_http_upload_append_field(u, &u->field_name, &ngx_http_upload_empty_field_value);
+
+            if(rc != NGX_OK)
+                return rc;
+        }else
+            u->discard_data = 1;
     }
 
     return NGX_OK;
@@ -888,6 +943,59 @@ ngx_http_upload_set_form_field(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     if (ngx_http_script_compile(&sc) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
+
+    return NGX_CONF_OK;
+} /* }}} */
+
+static char * /* {{{ ngx_http_upload_set_form_field */
+ngx_http_upload_pass_form_field(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_upload_loc_conf_t *ulcf = conf;
+
+    ngx_str_t                  *value;
+#if (NGX_PCRE)
+    ngx_int_t                   n;
+    ngx_str_t                  err;
+#endif
+    ngx_http_upload_field_filter_t *f;
+
+    value = cf->args->elts;
+
+    if (ulcf->field_filters == NULL) {
+        ulcf->field_filters = ngx_array_create(cf->pool, 1,
+                                        sizeof(ngx_http_upload_field_filter_t));
+        if (ulcf->field_filters == NULL) {
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    f = ngx_array_push(ulcf->field_filters);
+    if (f == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+#if (NGX_PCRE)
+    f->regex = ngx_regex_compile(&value[1], 0, cf->pool, &err);
+
+    if (f->regex == NULL) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "%s", err.data);
+        return NGX_CONF_ERROR;
+    }
+    
+    n = ngx_regex_capture_count(f->regex);
+
+    if (n < 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           ngx_regex_capture_count_n " failed for "
+                           "pattern \"%V\"", &value[1]);
+        return NGX_CONF_ERROR;
+    }
+
+    f->ncaptures = n;
+#else
+    f->name.len = value[1].len;
+    f->name.data = value[1].data;
+#endif
 
     return NGX_CONF_OK;
 } /* }}} */
