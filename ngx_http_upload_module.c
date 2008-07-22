@@ -51,7 +51,7 @@ typedef struct {
     ngx_regex_t              *regex;
     ngx_int_t                ncaptures;
 #else
-    ngx_str_t                name;
+    ngx_str_t                text;
 #endif
 } ngx_http_upload_field_filter_t;
 
@@ -72,23 +72,23 @@ typedef struct {
  * Upload module context
  */
 typedef struct ngx_http_upload_ctx_s {
-	ngx_str_t           boundary;
-	u_char              *boundary_start;
-	u_char              *boundary_pos;
+    ngx_str_t           boundary;
+    u_char              *boundary_start;
+    u_char              *boundary_pos;
 
 	upload_state_t		state;
 
-	u_char              *header_accumulator;
-	u_char              *header_accumulator_end;
-	u_char              *header_accumulator_pos;
+    u_char              *header_accumulator;
+    u_char              *header_accumulator_end;
+    u_char              *header_accumulator_pos;
 
     ngx_str_t           field_name;
     ngx_str_t           file_name;
     ngx_str_t           content_type;
 
-	u_char              *output_buffer;
-	u_char              *output_buffer_end;
-	u_char              *output_buffer_pos;
+    u_char              *output_buffer;
+    u_char              *output_buffer_end;
+    u_char              *output_buffer_pos;
 
     ngx_pool_t          *pool;
 
@@ -588,7 +588,7 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
                 if(rc == 0)
                     pass_field = 1;
 #else
-                if(ngx_strncmp(f[i].name.data, u->field_name.data, u->field_name.len) == 0)
+                if(ngx_strncmp(f[i].text.data, u->field_name.data, u->field_name.len) == 0)
                     pass_field = 1;
 #endif
             }
@@ -993,8 +993,8 @@ ngx_http_upload_pass_form_field(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     f->ncaptures = n;
 #else
-    f->name.len = value[1].len;
-    f->name.data = value[1].data;
+    f->text.len = value[1].len;
+    f->text.data = value[1].data;
 #endif
 
     return NGX_CONF_OK;
