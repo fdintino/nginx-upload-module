@@ -93,14 +93,12 @@ typedef struct {
 
 typedef struct ngx_http_upload_md5_ctx_s {
     MD5_CTX     md5;
-    u_char      md5_digest[MD5_DIGEST_LENGTH];
-    u_char      md5_digest_hex[MD5_DIGEST_LENGTH * 2];
+    u_char      md5_digest[MD5_DIGEST_LENGTH * 2];
 } ngx_http_upload_md5_ctx_t;
 
 typedef struct ngx_http_upload_sha1_ctx_s {
     SHA1_CTX    sha1;
-    u_char      sha1_digest[SHA_DIGEST_LENGTH];
-    u_char      sha1_digest_hex[SHA_DIGEST_LENGTH * 2];
+    u_char      sha1_digest[SHA_DIGEST_LENGTH * 2];
 } ngx_http_upload_sha1_ctx_t;
 
 /*
@@ -432,6 +430,16 @@ static ngx_http_variable_t  ngx_http_upload_aggregate_variables[] = { /* {{{ */
 }; /* }}} */
 
 static ngx_str_t  ngx_http_upload_empty_field_value = ngx_null_string;
+
+static ngx_str_t  ngx_upload_field_part1 = { /* {{{ */
+    sizeof("\r\nContent-Disposition: form-data; name=\"") - 1,
+    (u_char*)"\r\nContent-Disposition: form-data; name=\""
+}; /* }}} */
+
+static ngx_str_t  ngx_upload_field_part2 = { /* {{{ */
+    sizeof("\"\r\n\r\n") - 1,
+    (u_char*)"\"\r\n\r\n"
+}; /* }}} */
 
 static ngx_int_t /* {{{ ngx_http_upload_handler */
 ngx_http_upload_handler(ngx_http_request_t *r)
@@ -863,44 +871,14 @@ static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u, u
     }
 } /* }}} */
 
-static ngx_int_t /* {{{ ngx_http_upload_append_field */
-ngx_http_upload_append_field(ngx_http_upload_ctx_t *u, ngx_str_t *name, ngx_str_t *value)
+static void /* {{{ ngx_http_upload_append_str */
+ngx_http_upload_append_str(ngx_http_upload_ctx_t *u, ngx_buf_t *b, ngx_chain_t *cl, ngx_str_t *s)
 {
-    ngx_int_t   len;
-    ngx_chain_t *cl;
-    ngx_buf_t *b;
-
-    len = u->first_part ? u->boundary.len - 2 : u->boundary.len;
-
-    len += sizeof("\r\nContent-Disposition: form-data; name=\"") - 1;
-
-    len += name->len;
-
-    len += sizeof("\"\r\n\r\n") - 1;
-
-    len += value->len;
-
-    b = ngx_create_temp_buf(u->request->pool, len);
-
-    if (b == NULL) {
-        return NGX_UPLOAD_NOMEM;
-    }
-
-    cl = ngx_alloc_chain_link(u->request->pool);
-    if (cl == NULL) {
-        return NGX_UPLOAD_NOMEM;
-    }
-
-    b->last = ngx_cpymem(b->last, u->first_part ? u->boundary.data + 2 : u->boundary.data,
-        u->first_part ? u->boundary.len - 2 : u->boundary.len);
-
-    b->last = ngx_cpymem(b->last, "\r\nContent-Disposition: form-data; name=\"", sizeof("\r\nContent-Disposition: form-data; name=\"") - 1);
-
-    b->last = ngx_cpymem(b->last, name->data, name->len);
-
-    b->last = ngx_cpymem(b->last, "\"\r\n\r\n", sizeof("\"\r\n\r\n") - 1);
-
-    b->last = ngx_cpymem(b->last, value->data, value->len);
+    b->start = b->pos = s->data;
+    b->end = b->last = s->data + s->len;
+    b->memory = 1;
+    b->in_file = 0;
+    b->last_buf = 0;
 
     b->last_in_chain = 0;
 
@@ -914,6 +892,34 @@ ngx_http_upload_append_field(ngx_http_upload_ctx_t *u, ngx_str_t *name, ngx_str_
         u->last->next = cl;
         u->last = cl;
     }
+} /* }}} */
+
+static ngx_int_t /* {{{ ngx_http_upload_append_field */
+ngx_http_upload_append_field(ngx_http_upload_ctx_t *u, ngx_str_t *name, ngx_str_t *value)
+{
+    ngx_str_t   boundary = { u->first_part ? u->boundary.len - 2 : u->boundary.len,
+         u->first_part ? u->boundary.data + 2 : u->boundary.data };
+
+    ngx_buf_t *b;
+    ngx_chain_t *cl;
+
+    b = ngx_palloc(u->request->pool, 5 * sizeof(ngx_buf_t) + 5 * sizeof(ngx_chain_t));
+
+    if (b == NULL) {
+        return NGX_UPLOAD_NOMEM;
+    }
+
+    cl = (ngx_chain_t *)(b + 5);
+
+    ngx_http_upload_append_str(u, b, cl, &boundary);
+
+    ngx_http_upload_append_str(u, b + 1, cl + 1, &ngx_upload_field_part1);
+
+    ngx_http_upload_append_str(u, b + 2, cl + 2, name);
+
+    ngx_http_upload_append_str(u, b + 3, cl + 3, &ngx_upload_field_part2);
+
+    ngx_http_upload_append_str(u, b + 4, cl + 4, value);
 
     u->first_part = 0;
 
@@ -1059,14 +1065,17 @@ ngx_http_upload_md5_variable(ngx_http_request_t *r,
     v->not_found = 0;
 
     hex_table = (u_char*)data;
-    c = u->md5_ctx->md5_digest_hex;
+    c = u->md5_ctx->md5_digest + MD5_DIGEST_LENGTH * 2;
 
-    for (i = 0; i < MD5_DIGEST_LENGTH; i++) {
-        *c++ = hex_table[u->md5_ctx->md5_digest[i] >> 4];
-        *c++ = hex_table[u->md5_ctx->md5_digest[i] & 0xf];
-    }
+    i = MD5_DIGEST_LENGTH;
 
-    v->data = u->md5_ctx->md5_digest_hex;
+    do{
+        i--;
+        *--c = hex_table[u->md5_ctx->md5_digest[i] & 0xf];
+        *--c = hex_table[u->md5_ctx->md5_digest[i] >> 4];
+    }while(i != 0);
+
+    v->data = u->md5_ctx->md5_digest;
     v->len = MD5_DIGEST_LENGTH * 2;
 
     return NGX_OK;
@@ -1093,14 +1102,17 @@ ngx_http_upload_sha1_variable(ngx_http_request_t *r,
     v->not_found = 0;
 
     hex_table = (u_char*)data;
-    c = u->sha1_ctx->sha1_digest_hex;
+    c = u->sha1_ctx->sha1_digest + SHA_DIGEST_LENGTH * 2;
 
-    for (i = 0; i < SHA_DIGEST_LENGTH; i++) {
-        *c++ = hex_table[u->sha1_ctx->sha1_digest[i] >> 4];
-        *c++ = hex_table[u->sha1_ctx->sha1_digest[i] & 0xf];
-    }
+    i = SHA_DIGEST_LENGTH;
 
-    v->data = u->sha1_ctx->sha1_digest_hex;
+    do{
+        i--;
+        *--c = hex_table[u->sha1_ctx->sha1_digest[i] & 0xf];
+        *--c = hex_table[u->sha1_ctx->sha1_digest[i] >> 4];
+    }while(i != 0);
+
+    v->data = u->sha1_ctx->sha1_digest;
     v->len = SHA_DIGEST_LENGTH * 2;
 
     return NGX_OK;
