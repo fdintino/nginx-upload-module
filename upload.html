@@ -3,9 +3,14 @@
 <title>Test upload</title>
 </head>
 <body>
-<h2>Select file to upload</h2>
-<form name="upload" method="POST" enctype="multipart/form-data" action="http://localhost/upload">
+<h2>Select files to upload</h2>
+<form enctype="multipart/form-data" action="http://localhost/upload" method="post">
 <input type="file" name="file1"><br>
+<input type="file" name="file2"><br>
+<input type="file" name="file3"><br>
+<input type="file" name="file4"><br>
+<input type="file" name="file5"><br>
+<input type="file" name="file6"><br>
 <input type="submit" name="submit" value="Upload">
 <input type="hidden" name="test" value="value">
 </form>

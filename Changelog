@@ -1,4 +1,13 @@
 
+Version 2.0.4
+ * Fixed bug: location configuration of upload_set_form_field and upload_pass_form_field
+   was not inheritable from server configuration.
+ * Added feature: directive upload_aggregate_form_field to pass aggragate properties
+   of a file like file size, MD5 and SHA1 sums to backend. MD5 and SHA1 sums are calculated
+   on request for file content. When no calculation is requested, additional memory
+   and CPU are not used. Calculation could be requested via specifying variables
+   $upload_file_md5, $upload_file_md5_uc, $upload_file_sha1 and $upload_file_sha1_uc.
+
 Version 2.0.3
  * upload_store directive was not able to receive more than one argument.
    As a result no hashed dirs for file uploads were possible.
