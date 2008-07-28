@@ -7,6 +7,10 @@ Version 2.0.4
    on request for file content. When no calculation is requested, additional memory
    and CPU are not used. Calculation could be requested via specifying variables
    $upload_file_md5, $upload_file_md5_uc, $upload_file_sha1 and $upload_file_sha1_uc.
+ * Fixed bug: missing CRLF at the end of resulting body.
+ * Added feature: limiting file size and resulting body size via upload_max_file_size
+   and upload_max_output_body_len.
+ * Change: optimized out some unnecessary memory allocations and zeroeing.
 
 Version 2.0.3
  * upload_store directive was not able to receive more than one argument.
