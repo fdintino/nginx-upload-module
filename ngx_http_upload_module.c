@@ -38,7 +38,6 @@
 #define NGX_UPLOAD_NOMEM        -2
 #define NGX_UPLOAD_IOERROR      -3
 #define NGX_UPLOAD_SCRIPTERROR  -4
-#define NGX_UPLOAD_TOOLARGE     -5
 
 /*
  * State of multipart/form-data parser
@@ -82,9 +81,7 @@ typedef struct {
     ngx_path_t        *store_path;
     ngx_uint_t        store_access;
     size_t            buffer_size;
-    size_t            max_file_size;
     size_t            max_header_len;
-    size_t            max_output_body_len;
     ngx_array_t       *field_templates;
     ngx_array_t       *aggregate_field_templates;
     ngx_array_t       *field_filters;
@@ -159,6 +156,8 @@ static ngx_int_t ngx_http_upload_variable(ngx_http_request_t *r,
 static ngx_int_t ngx_http_upload_md5_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data);
 static ngx_int_t ngx_http_upload_sha1_variable(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data);
+static ngx_int_t ngx_http_upload_file_size_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data);
 static char *ngx_http_upload_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
@@ -258,8 +257,9 @@ ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ngx_str_t
  *               NGX_UPLOAD_NOMEM insufficient memory 
  *               NGX_UPLOAD_IOERROR input-output error
  *               NGX_UPLOAD_SCRIPTERROR nginx script engine failed
+ *               NGX_UPLOAD_TOOLARGE field body is too large
  */
-int upload_process_buf(ngx_http_upload_ctx_t *upload_ctx, u_char *start, u_char *end);
+ngx_int_t upload_process_buf(ngx_http_upload_ctx_t *upload_ctx, u_char *start, u_char *end);
 
 static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
 
@@ -305,16 +305,6 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
       NULL },
 
     /*
-     * Specifies the maximal size of a file which could be uploaded
-     */
-    { ngx_string("upload_max_file_size"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-      ngx_conf_set_size_slot,
-      NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof(ngx_http_upload_loc_conf_t, max_file_size),
-      NULL },
-
-    /*
      * Specifies the maximal length of the part header
      */
     { ngx_string("upload_max_part_header_len"),
@@ -322,16 +312,6 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
       ngx_conf_set_size_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_upload_loc_conf_t, max_header_len),
-      NULL },
-
-    /*
-     * Specifies the maximal length of resulting body
-     */
-    { ngx_string("upload_max_output_body_len"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-      ngx_conf_set_size_slot,
-      NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof(ngx_http_upload_loc_conf_t, max_output_body_len),
       NULL },
 
     /*
@@ -439,6 +419,10 @@ static ngx_http_variable_t  ngx_http_upload_aggregate_variables[] = { /* {{{ */
       (uintptr_t) "0123456789ABCDEF",
       NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH, 0 },
 
+    { ngx_string("upload_file_size"), NULL, ngx_http_upload_file_size_variable,
+      (uintptr_t) offsetof(ngx_http_upload_ctx_t, output_file.offset),
+      NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH, 0 },
+
     { ngx_null_string, NULL, NULL, 0, 0, 0 }
 }; /* }}} */
 
@@ -538,14 +522,6 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
     ngx_str_t                   *uri;
     ngx_buf_t                      *b;
     ngx_chain_t                    *cl;
-
-    if(ulcf->max_output_body_len && ctx->output_body_len + ctx->boundary.len
-        + 4 > ulcf->max_output_body_len)
-    {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                       "client has sent too large request body");
-        return NGX_HTTP_REQUEST_ENTITY_TOO_LARGE;
-    }
 
     ctx->output_body_len += ctx->boundary.len + 4;
 
@@ -802,7 +778,7 @@ static void ngx_http_upload_finish_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
                     if (ngx_http_script_run(r, &aggregate_field_name, af[i].field_lengths->elts, 0,
                         af[i].field_values->elts) == NULL)
                     {
-                        return;
+                        goto rollback;
                     }
                 }
 
@@ -812,20 +788,24 @@ static void ngx_http_upload_finish_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
                     if (ngx_http_script_run(r, &aggregate_field_value, af[i].value_lengths->elts, 0,
                         af[i].value_values->elts) == NULL)
                     {
-                        return;
+                        goto rollback;
                     }
                 }
 
                 rc = ngx_http_upload_append_field(u, &aggregate_field_name, &aggregate_field_value);
 
                 if(rc != NGX_OK)
-                    return;
+                    goto rollback;
             }
         }
     }
 
     // Checkpoint current output chain state
     u->checkpoint = u->last;
+    return;
+
+rollback:
+    ngx_http_upload_abort_handler(u);
 } /* }}} */
 
 static void ngx_http_upload_abort_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
@@ -858,17 +838,10 @@ static void ngx_http_upload_abort_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
 
 static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u, u_char *buf, size_t len) { /* {{{ */
     ngx_http_request_t             *r = u->request;
-    ngx_http_upload_loc_conf_t     *ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
     ngx_buf_t                      *b;
     ngx_chain_t                    *cl;
 
     if(u->is_file) {
-        if(ulcf->max_file_size && u->output_file.offset + len > ulcf->max_file_size) {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                           "client has sent too large file \"%V\"", &u->output_file.name);
-            return NGX_UPLOAD_TOOLARGE;
-        }
-
         if(u->md5_ctx)
             MD5Update(&u->md5_ctx->md5, buf, len);
 
@@ -882,14 +855,6 @@ static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u, u
         }else
             return NGX_OK;
     }else{
-        if(ulcf->max_output_body_len && u->output_body_len + len > ulcf->max_output_body_len) {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                           "client has sent too large field \"%V\"", &u->field_name);
-            return NGX_UPLOAD_TOOLARGE;
-        }
-
-        u->output_body_len += len;
-
         b = ngx_create_temp_buf(u->request->pool, len);
 
         if (b == NULL) {
@@ -997,9 +962,7 @@ ngx_http_upload_create_loc_conf(ngx_conf_t *cf)
     conf->store_access = NGX_CONF_UNSET_UINT;
 
     conf->buffer_size = NGX_CONF_UNSET_SIZE;
-    conf->max_file_size = NGX_CONF_UNSET_SIZE;
     conf->max_header_len = NGX_CONF_UNSET_SIZE;
-    conf->max_output_body_len = NGX_CONF_UNSET_SIZE;
 
     /*
      * conf->field_templates,
@@ -1031,17 +994,9 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
                               prev->buffer_size,
                               (size_t) ngx_pagesize);
 
-    ngx_conf_merge_size_value(conf->max_file_size,
-                              prev->max_file_size,
-                              (size_t) 0);
-
     ngx_conf_merge_size_value(conf->max_header_len,
                               prev->max_header_len,
                               (size_t) 512);
-
-    ngx_conf_merge_size_value(conf->max_output_body_len,
-                              prev->max_output_body_len,
-                              (size_t) 256 * 1024);
 
     if(conf->field_templates == NULL) {
         conf->field_templates = prev->field_templates;
@@ -1189,6 +1144,32 @@ ngx_http_upload_sha1_variable(ngx_http_request_t *r,
     return NGX_OK;
 } /* }}} */
 
+static ngx_int_t /* {{{ ngx_http_upload_file_size_variable */
+ngx_http_upload_file_size_variable(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v,  uintptr_t data)
+{
+    ngx_http_upload_ctx_t  *u;
+    u_char                 *p;
+    off_t                  *value;
+
+    u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
+
+    value = (off_t *) ((char *) u + data);
+
+    p = ngx_palloc(r->pool, NGX_OFF_T_LEN);
+    if (p == NULL) {
+        return NGX_ERROR;
+    }
+
+    v->len = ngx_sprintf(p, "%O", *value) - p;
+    v->valid = 1;
+    v->no_cacheable = 0;
+    v->not_found = 0;
+    v->data = p;
+
+    return NGX_OK;
+} /* }}} */
+
 static char * /* {{{ ngx_http_upload_set_form_field */
 ngx_http_upload_set_form_field(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -1281,7 +1262,7 @@ ngx_http_upload_set_form_field(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
             /*
              * ngx_http_script_compile does check for final bracket earlier,
-             * so we don't need to care about it, which simplifies things
+             * therefore we don't need to care about it, which simplifies things
              */
             if(match != NULL
                 && ((match - value[i].data >= 1 && match[-1] == '$') 
@@ -1595,8 +1576,6 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
                         return NGX_HTTP_BAD_REQUEST;
                     case NGX_UPLOAD_IOERROR:
                         return NGX_HTTP_SERVICE_UNAVAILABLE;
-                    case NGX_UPLOAD_TOOLARGE:
-                        return NGX_HTTP_REQUEST_ENTITY_TOO_LARGE;
                     case NGX_UPLOAD_NOMEM: case NGX_UPLOAD_SCRIPTERROR:
                     default:
                         return NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -1676,8 +1655,6 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
             return NGX_HTTP_BAD_REQUEST;
         case NGX_UPLOAD_IOERROR:
             return NGX_HTTP_SERVICE_UNAVAILABLE;
-        case NGX_UPLOAD_TOOLARGE:
-            return NGX_HTTP_REQUEST_ENTITY_TOO_LARGE;
         case NGX_UPLOAD_NOMEM: case NGX_UPLOAD_SCRIPTERROR:
         default:
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -1999,7 +1976,7 @@ void upload_putc(ngx_http_upload_ctx_t *upload_ctx, u_char c) { /* {{{ */
     }
 } /* }}} */
 
-int upload_process_buf(ngx_http_upload_ctx_t *upload_ctx, u_char *start, u_char *end) { /* {{{ */
+ngx_int_t upload_process_buf(ngx_http_upload_ctx_t *upload_ctx, u_char *start, u_char *end) { /* {{{ */
 
 	u_char *p;
     ngx_int_t rc;
