@@ -96,7 +96,7 @@ typedef struct ngx_http_upload_md5_ctx_s {
 } ngx_http_upload_md5_ctx_t;
 
 typedef struct ngx_http_upload_sha1_ctx_s {
-    SHA1_CTX    sha1;
+    SHA_CTX     sha1;
     u_char      sha1_digest[SHA_DIGEST_LENGTH * 2];
 } ngx_http_upload_sha1_ctx_t;
 
