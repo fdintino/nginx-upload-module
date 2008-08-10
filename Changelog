@@ -1,6 +1,9 @@
 
 Version 2.0.5
- * Fixed bug: prevent leaking of file descriptor on a timeout.
+ * Fixed bug: prevent leaking of file descriptors on a timeout (unconfirmed problem).
+ * Fixed bug: variables in field values in upload_set_form_field and
+   upload_aggregate_form_field directives were not working if field name
+   contained 0 variables. 
 
 Version 2.0.4
  * Fixed bug: location configuration of upload_set_form_field and upload_pass_form_field

@@ -1239,22 +1239,20 @@ ngx_http_upload_set_form_field(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
      */
     n = ngx_http_script_variables_count(&value[1]);
 
-    if (n == 0) {
-        return NGX_CONF_OK;
-    }
+    if (n > 0) {
+        ngx_memzero(&sc, sizeof(ngx_http_script_compile_t));
 
-    ngx_memzero(&sc, sizeof(ngx_http_script_compile_t));
+        sc.cf = cf;
+        sc.source = &value[1];
+        sc.lengths = &h->field_lengths;
+        sc.values = &h->field_values;
+        sc.variables = n;
+        sc.complete_lengths = 1;
+        sc.complete_values = 1;
 
-    sc.cf = cf;
-    sc.source = &value[1];
-    sc.lengths = &h->field_lengths;
-    sc.values = &h->field_values;
-    sc.variables = n;
-    sc.complete_lengths = 1;
-    sc.complete_values = 1;
-
-    if (ngx_http_script_compile(&sc) != NGX_OK) {
-        return NGX_CONF_ERROR;
+        if (ngx_http_script_compile(&sc) != NGX_OK) {
+            return NGX_CONF_ERROR;
+        }
     }
 
     /*
@@ -1262,22 +1260,20 @@ ngx_http_upload_set_form_field(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
      */
     n = ngx_http_script_variables_count(&value[2]);
 
-    if (n == 0) {
-        return NGX_CONF_OK;
-    }
+    if (n > 0) {
+        ngx_memzero(&sc, sizeof(ngx_http_script_compile_t));
 
-    ngx_memzero(&sc, sizeof(ngx_http_script_compile_t));
+        sc.cf = cf;
+        sc.source = &value[2];
+        sc.lengths = &h->value_lengths;
+        sc.values = &h->value_values;
+        sc.variables = n;
+        sc.complete_lengths = 1;
+        sc.complete_values = 1;
 
-    sc.cf = cf;
-    sc.source = &value[2];
-    sc.lengths = &h->value_lengths;
-    sc.values = &h->value_values;
-    sc.variables = n;
-    sc.complete_lengths = 1;
-    sc.complete_values = 1;
-
-    if (ngx_http_script_compile(&sc) != NGX_OK) {
-        return NGX_CONF_ERROR;
+        if (ngx_http_script_compile(&sc) != NGX_OK) {
+            return NGX_CONF_ERROR;
+        }
     }
 
     /*
@@ -1379,12 +1375,11 @@ ngx_http_upload_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     ngx_str_t                   *value, *url;
 
+    value = cf->args->elts;
+    url = &value[1];
+
     clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
     clcf->handler = ngx_http_upload_handler;
-
-    value = cf->args->elts;
-
-    url = &value[1];
 
     ulcf->url = *url;
 
