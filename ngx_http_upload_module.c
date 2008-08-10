@@ -136,6 +136,8 @@ typedef struct ngx_http_upload_ctx_s {
     ngx_chain_t         *checkpoint;
     size_t              output_body_len;
 
+    ngx_pool_cleanup_t       *cln;
+
     ngx_http_upload_md5_ctx_t   *md5_ctx;    
     ngx_http_upload_sha1_ctx_t  *sha1_ctx;    
 
@@ -481,6 +483,14 @@ ngx_http_upload_handler(ngx_http_request_t *r)
     }else
         u->sha1_ctx = NULL;
 
+    u->cln = ngx_pool_cleanup_add(r->pool, sizeof(ngx_pool_cleanup_file_t));
+
+    if (u->cln == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    u->cln->handler = NULL;
+
     // Check whether Content-Type header is missing
     if(r->headers_in.content_type == NULL) {
         ngx_log_error(NGX_LOG_ERR, u->log, ngx_errno,
@@ -616,6 +626,7 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
     ngx_http_upload_field_filter_t    *f;
     ngx_str_t   field_name, field_value;
     ngx_uint_t  pass_field;
+    ngx_pool_cleanup_file_t  *clnf;
 
     if(u->is_file) {
         file->name.len = path->name.len + 1 + path->len + 10;
@@ -659,6 +670,13 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
             return NGX_UPLOAD_IOERROR;
         }
 
+        u->cln->handler = ngx_pool_delete_file;
+
+        clnf = u->cln->data;
+        clnf->fd = file->fd;
+        clnf->name = file->name.data;
+        clnf->log = r->connection->log;
+
         if(ulcf->field_templates) {
             t = ulcf->field_templates->elts;
             for (i = 0; i < ulcf->field_templates->nelts; i++) {
@@ -669,7 +687,8 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
                     if (ngx_http_script_run(r, &field_name, t[i].field_lengths->elts, 0,
                         t[i].field_values->elts) == NULL)
                     {
-                        return NGX_UPLOAD_SCRIPTERROR;
+                        rc = NGX_UPLOAD_SCRIPTERROR;
+                        goto cleanup_file;
                     }
                 }
 
@@ -679,14 +698,15 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
                     if (ngx_http_script_run(r, &field_value, t[i].value_lengths->elts, 0,
                         t[i].value_values->elts) == NULL)
                     {
-                        return NGX_UPLOAD_SCRIPTERROR;
+                        rc = NGX_UPLOAD_SCRIPTERROR;
+                        goto cleanup_file;
                     }
                 }
 
                 rc = ngx_http_upload_append_field(u, &field_name, &field_value);
 
                 if(rc != NGX_OK)
-                    return rc;
+                    goto cleanup_file;
             }
         }
 
@@ -743,6 +763,10 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
     }
 
     return NGX_OK;
+
+cleanup_file:
+    ngx_pool_delete_file(clnf);
+    return rc;
 } /* }}} */
 
 static void ngx_http_upload_finish_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
@@ -754,6 +778,8 @@ static void ngx_http_upload_finish_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
     ngx_int_t   rc;
 
     if(u->is_file) {
+        u->cln->handler = NULL;
+
         ngx_close_file(u->output_file.fd);
 
         ngx_log_error(NGX_LOG_INFO, r->connection->log, 0
@@ -810,6 +836,7 @@ rollback:
 
 static void ngx_http_upload_abort_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
     if(u->is_file) {
+        u->cln->handler = NULL;
 
         ngx_close_file(u->output_file.fd);
 
