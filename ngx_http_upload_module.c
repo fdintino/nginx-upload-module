@@ -74,6 +74,18 @@ typedef struct {
 } ngx_http_upload_field_filter_t;
 
 /*
+ * Upload cleanup record
+ */
+typedef struct ngx_http_upload_cleanup_s {
+    ngx_fd_t                         fd;
+    u_char                           *filename;
+    ngx_http_headers_out_t           *headers_out;
+    ngx_array_t                      *cleanup_statuses;
+    ngx_log_t                        *log;
+    unsigned int                     aborted:1;
+} ngx_upload_cleanup_t;
+
+/*
  * Upload configuration for specific location
  */
 typedef struct {
@@ -85,6 +97,7 @@ typedef struct {
     ngx_array_t       *field_templates;
     ngx_array_t       *aggregate_field_templates;
     ngx_array_t       *field_filters;
+    ngx_array_t       *cleanup_statuses;
 
     unsigned int      md5:1;
     unsigned int      sha1:1;
@@ -136,7 +149,7 @@ typedef struct ngx_http_upload_ctx_s {
     ngx_chain_t         *checkpoint;
     size_t              output_body_len;
 
-    ngx_pool_cleanup_t       *cln;
+    ngx_pool_cleanup_t          *cln;
 
     ngx_http_upload_md5_ctx_t   *md5_ctx;    
     ngx_http_upload_sha1_ctx_t  *sha1_ctx;    
@@ -182,6 +195,9 @@ static char *ngx_http_upload_set_form_field(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static char *ngx_http_upload_pass_form_field(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
+static char *ngx_http_upload_cleanup(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
+static void ngx_upload_cleanup_handler(void *data);
 
 /*
  * upload_init_ctx
@@ -350,6 +366,18 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
       0,
       NULL},
 
+    /*
+     * Specifies http statuses upon reception of
+     * which cleanup of uploaded files will be initiated
+     */
+    { ngx_string("upload_cleanup"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF
+                        |NGX_CONF_1MORE,
+      ngx_http_upload_cleanup,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      0,
+      NULL},
+
       ngx_null_command
 }; /* }}} */
 
@@ -482,14 +510,6 @@ ngx_http_upload_handler(ngx_http_request_t *r)
         }
     }else
         u->sha1_ctx = NULL;
-
-    u->cln = ngx_pool_cleanup_add(r->pool, sizeof(ngx_pool_cleanup_file_t));
-
-    if (u->cln == NULL) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-    u->cln->handler = NULL;
 
     // Check whether Content-Type header is missing
     if(r->headers_in.content_type == NULL) {
@@ -626,9 +646,14 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
     ngx_http_upload_field_filter_t    *f;
     ngx_str_t   field_name, field_value;
     ngx_uint_t  pass_field;
-    ngx_pool_cleanup_file_t  *clnf;
+    ngx_upload_cleanup_t  *ucln;
 
     if(u->is_file) {
+        u->cln = ngx_pool_cleanup_add(r->pool, sizeof(ngx_upload_cleanup_t));
+
+        if(u->cln == NULL)
+            return NGX_UPLOAD_NOMEM;
+
         file->name.len = path->name.len + 1 + path->len + 10;
 
         file->name.data = ngx_palloc(u->request->pool, file->name.len + 1);
@@ -670,12 +695,15 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
             return NGX_UPLOAD_IOERROR;
         }
 
-        u->cln->handler = ngx_pool_delete_file;
+        u->cln->handler = ngx_upload_cleanup_handler;
 
-        clnf = u->cln->data;
-        clnf->fd = file->fd;
-        clnf->name = file->name.data;
-        clnf->log = r->connection->log;
+        ucln = u->cln->data;
+        ucln->fd = file->fd;
+        ucln->filename = file->name.data;
+        ucln->log = r->connection->log;
+        ucln->headers_out = &r->headers_out;
+        ucln->cleanup_statuses = ulcf->cleanup_statuses;
+        ucln->aborted = 0;
 
         if(ulcf->field_templates) {
             t = ulcf->field_templates->elts;
@@ -765,7 +793,6 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
     return NGX_OK;
 
 cleanup_file:
-    ngx_pool_delete_file(clnf);
     return rc;
 } /* }}} */
 
@@ -776,9 +803,10 @@ static void ngx_http_upload_finish_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
     ngx_http_upload_loc_conf_t  *ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
     ngx_uint_t  i;
     ngx_int_t   rc;
+    ngx_upload_cleanup_t  *ucln = u->cln->data;
 
     if(u->is_file) {
-        u->cln->handler = NULL;
+        ucln->fd = -1;
 
         ngx_close_file(u->output_file.fd);
 
@@ -835,8 +863,19 @@ rollback:
 } /* }}} */
 
 static void ngx_http_upload_abort_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
+    ngx_upload_cleanup_t  *ucln = u->cln->data;
+
     if(u->is_file) {
-        u->cln->handler = NULL;
+        /*
+         * Upload of a part could be aborted due to temporary reasons, thus
+         * next body part will be potentially processed successfuly.
+         *
+         * Therefore we don't postpone cleanup to the request finallization
+         * in order to save additional resources, instead we mark existing
+         * cleanup record as aborted.
+         */
+        ucln->fd = -1;
+        ucln->aborted = 1;
 
         ngx_close_file(u->output_file.fd);
 
@@ -1043,6 +1082,10 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         if(prev->sha1) {
             conf->sha1 = prev->sha1;
         }
+    }
+
+    if(conf->cleanup_statuses == NULL) {
+        conf->cleanup_statuses = prev->cleanup_statuses;
     }
 
     return NGX_CONF_OK;
@@ -1363,6 +1406,95 @@ ngx_http_upload_pass_form_field(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     f->text.len = value[1].len;
     f->text.data = value[1].data;
 #endif
+
+    return NGX_CONF_OK;
+} /* }}} */
+
+static char * /* {{{ ngx_http_upload_cleanup */
+ngx_http_upload_cleanup(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_upload_loc_conf_t *ulcf = conf;
+
+    ngx_str_t                  *value;
+    ngx_uint_t                 i;
+    ngx_int_t                  status, lo, hi;
+    uint16_t                   *s;
+
+    value = cf->args->elts;
+
+    if (ulcf->cleanup_statuses == NULL) {
+        ulcf->cleanup_statuses = ngx_array_create(cf->pool, 1,
+                                        sizeof(uint16_t));
+        if (ulcf->cleanup_statuses == NULL) {
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    for (i = 1; i < cf->args->nelts; i++) {
+        if(value[i].len > 4 && value[i].data[3] == '-') {
+            lo = ngx_atoi(value[i].data, 3);
+
+            if (lo == NGX_ERROR || lo == 499) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid lower bound \"%V\"", &value[i]);
+                return NGX_CONF_ERROR;
+            }
+
+            hi = ngx_atoi(value[i].data + 4, value[i].len - 4);
+
+            if (hi == NGX_ERROR || hi == 499) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid upper bound \"%V\"", &value[i]);
+                return NGX_CONF_ERROR;
+            }
+
+            if (hi < lo) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "upper bound must be greater then lower bound in \"%V\"",
+                                   &value[i]);
+                return NGX_CONF_ERROR;
+            }
+
+            if (lo < 400 || hi > 599) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "values \"%V\" must be between 400 and 599",
+                                   &value[i]);
+                return NGX_CONF_ERROR;
+            }
+
+            for(status = lo ; status <= hi; status++) {
+                s = ngx_array_push(ulcf->cleanup_statuses);
+                if (s == NULL) {
+                    return NGX_CONF_ERROR;
+                }
+
+                *s = status;
+            }
+        }else{
+            status = ngx_atoi(value[i].data, value[i].len);
+
+            if (status == NGX_ERROR || status == 499) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid value \"%V\"", &value[i]);
+                return NGX_CONF_ERROR;
+            }
+
+            if (status < 400 || status > 599) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "value \"%V\" must be between 400 and 599",
+                                   &value[i]);
+                return NGX_CONF_ERROR;
+            }
+
+            s = ngx_array_push(ulcf->cleanup_statuses);
+            if (s == NULL) {
+                return NGX_CONF_ERROR;
+            }
+
+            *s = status;
+        }
+    }
+
 
     return NGX_CONF_OK;
 } /* }}} */
@@ -2135,5 +2267,48 @@ ngx_int_t upload_process_buf(ngx_http_upload_ctx_t *upload_ctx, u_char *start, u
 	}
 
 	return NGX_OK;
+} /* }}} */
+
+static void /* {{{ ngx_upload_cleanup_handler */
+ngx_upload_cleanup_handler(void *data)
+{
+    ngx_upload_cleanup_t        *cln = data;
+    ngx_uint_t                  i;
+    uint16_t                    *s;
+    u_char                      do_cleanup = 0;
+
+    if(!cln->aborted) {
+        if(cln->fd >= 0) {
+            if (ngx_close_file(cln->fd) == NGX_FILE_ERROR) {
+                ngx_log_error(NGX_LOG_ALERT, cln->log, ngx_errno,
+                              ngx_close_file_n " \"%s\" failed", cln->filename);
+            }
+        }
+
+        if(cln->cleanup_statuses != NULL) {
+            s = cln->cleanup_statuses->elts;
+
+            for(i = 0; i < cln->cleanup_statuses->nelts; i++) {
+                if(cln->headers_out->status == s[i]) {
+                    do_cleanup = 1;
+                }
+            }
+        }
+
+        if(do_cleanup) {
+                if(ngx_delete_file(cln->filename) == NGX_FILE_ERROR) { 
+                    ngx_log_error(NGX_LOG_ERR, cln->log, ngx_errno
+                        , "failed to remove destination file \"%s\" after http status %l"
+                        , cln->filename
+                        , cln->headers_out->status
+                        );
+                }else
+                    ngx_log_error(NGX_LOG_INFO, cln->log, 0
+                        , "finished cleanup of file %s after http status %l"
+                        , cln->filename
+                        , cln->headers_out->status
+                        );
+        }
+    }
 } /* }}} */
 

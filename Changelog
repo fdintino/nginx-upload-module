@@ -4,6 +4,9 @@ Version 2.0.5
  * Fixed bug: variables in field values in upload_set_form_field and
    upload_aggregate_form_field directives were not working if field name
    contained 0 variables. 
+ * Added feature: directive upload_cleanup now specifies statuses,
+   which initiate removal of uploaded files. Used for cleanup after
+   failure of a backend.
 
 Version 2.0.4
  * Fixed bug: location configuration of upload_set_form_field and upload_pass_form_field
