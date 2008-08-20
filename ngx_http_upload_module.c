@@ -149,7 +149,7 @@ typedef struct ngx_http_upload_ctx_s {
     ngx_chain_t         *checkpoint;
     size_t              output_body_len;
 
-    ngx_pool_cleanup_t          *cln;
+    ngx_http_cleanup_t          *cln;
 
     ngx_http_upload_md5_ctx_t   *md5_ctx;    
     ngx_http_upload_sha1_ctx_t  *sha1_ctx;    
@@ -649,7 +649,7 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
     ngx_upload_cleanup_t  *ucln;
 
     if(u->is_file) {
-        u->cln = ngx_pool_cleanup_add(r->pool, sizeof(ngx_upload_cleanup_t));
+        u->cln = ngx_http_cleanup_add(r, sizeof(ngx_upload_cleanup_t));
 
         if(u->cln == NULL)
             return NGX_UPLOAD_NOMEM;
@@ -1434,7 +1434,7 @@ ngx_http_upload_cleanup(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         if(value[i].len > 4 && value[i].data[3] == '-') {
             lo = ngx_atoi(value[i].data, 3);
 
-            if (lo == NGX_ERROR || lo == 499) {
+            if (lo == NGX_ERROR) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                    "invalid lower bound \"%V\"", &value[i]);
                 return NGX_CONF_ERROR;
@@ -1442,7 +1442,7 @@ ngx_http_upload_cleanup(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
             hi = ngx_atoi(value[i].data + 4, value[i].len - 4);
 
-            if (hi == NGX_ERROR || hi == 499) {
+            if (hi == NGX_ERROR) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                    "invalid upper bound \"%V\"", &value[i]);
                 return NGX_CONF_ERROR;
@@ -1455,37 +1455,26 @@ ngx_http_upload_cleanup(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                 return NGX_CONF_ERROR;
             }
 
-            if (lo < 400 || hi > 599) {
-                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                                   "values \"%V\" must be between 400 and 599",
-                                   &value[i]);
-                return NGX_CONF_ERROR;
-            }
-
-            for(status = lo ; status <= hi; status++) {
-                s = ngx_array_push(ulcf->cleanup_statuses);
-                if (s == NULL) {
-                    return NGX_CONF_ERROR;
-                }
-
-                *s = status;
-            }
         }else{
             status = ngx_atoi(value[i].data, value[i].len);
 
-            if (status == NGX_ERROR || status == 499) {
+            if (status == NGX_ERROR) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                    "invalid value \"%V\"", &value[i]);
                 return NGX_CONF_ERROR;
             }
 
-            if (status < 400 || status > 599) {
-                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                                   "value \"%V\" must be between 400 and 599",
-                                   &value[i]);
-                return NGX_CONF_ERROR;
-            }
+            hi = lo = status;
+        }
 
+        if (lo < 400 || hi > 599) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "value(s) \"%V\" must be between 400 and 599",
+                               &value[i]);
+            return NGX_CONF_ERROR;
+        }
+
+        for(status = lo ; status <= hi; status++) {
             s = ngx_array_push(ulcf->cleanup_statuses);
             if (s == NULL) {
                 return NGX_CONF_ERROR;
@@ -2304,7 +2293,7 @@ ngx_upload_cleanup_handler(void *data)
                         );
                 }else
                     ngx_log_error(NGX_LOG_INFO, cln->log, 0
-                        , "finished cleanup of file %s after http status %l"
+                        , "finished cleanup of file \"%s\" after http status %l"
                         , cln->filename
                         , cln->headers_out->status
                         );
