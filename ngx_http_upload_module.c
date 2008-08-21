@@ -101,6 +101,7 @@ typedef struct {
 
     unsigned int      md5:1;
     unsigned int      sha1:1;
+    unsigned int      crc32:1;
 } ngx_http_upload_loc_conf_t;
 
 typedef struct ngx_http_upload_md5_ctx_s {
@@ -153,10 +154,12 @@ typedef struct ngx_http_upload_ctx_s {
 
     ngx_http_upload_md5_ctx_t   *md5_ctx;    
     ngx_http_upload_sha1_ctx_t  *sha1_ctx;    
+    uint32_t                    crc32;    
 
     unsigned int        first_part:1;
     unsigned int        discard_data:1;
     unsigned int        is_file:1;
+    unsigned int        calculate_crc32:1;
 } ngx_http_upload_ctx_t;
 
 static ngx_int_t ngx_http_upload_handler(ngx_http_request_t *r);
@@ -173,6 +176,8 @@ static ngx_int_t ngx_http_upload_md5_variable(ngx_http_request_t *r,
 static ngx_int_t ngx_http_upload_sha1_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data);
 static ngx_int_t ngx_http_upload_file_size_variable(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data);
+static ngx_int_t ngx_http_upload_crc32_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data);
 static char *ngx_http_upload_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
@@ -449,6 +454,10 @@ static ngx_http_variable_t  ngx_http_upload_aggregate_variables[] = { /* {{{ */
       (uintptr_t) "0123456789ABCDEF",
       NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH, 0 },
 
+    { ngx_string("upload_file_crc32"), NULL, ngx_http_upload_crc32_variable,
+      (uintptr_t) offsetof(ngx_http_upload_ctx_t, crc32),
+      NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH, 0 },
+
     { ngx_string("upload_file_size"), NULL, ngx_http_upload_file_size_variable,
       (uintptr_t) offsetof(ngx_http_upload_ctx_t, output_file.offset),
       NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH, 0 },
@@ -510,6 +519,8 @@ ngx_http_upload_handler(ngx_http_request_t *r)
         }
     }else
         u->sha1_ctx = NULL;
+
+    u->calculate_crc32 = ulcf->crc32;
 
     // Check whether Content-Type header is missing
     if(r->headers_in.content_type == NULL) {
@@ -744,6 +755,9 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
         if(u->sha1_ctx != NULL)
             SHA1_Init(&u->sha1_ctx->sha1);
 
+        if(u->calculate_crc32)
+            ngx_crc32_init(u->crc32);
+
         ngx_log_error(NGX_LOG_INFO, r->connection->log, 0
             , "started uploading file \"%V\" to \"%V\" (field \"%V\", content type \"%V\")"
             , &u->file_name
@@ -821,6 +835,9 @@ static void ngx_http_upload_finish_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
 
         if(u->sha1_ctx)
             SHA1_Final(u->sha1_ctx->sha1_digest, &u->sha1_ctx->sha1);
+
+        if(u->calculate_crc32)
+            ngx_crc32_final(u->crc32);
 
         if(ulcf->aggregate_field_templates) {
             af = ulcf->aggregate_field_templates->elts;
@@ -913,6 +930,9 @@ static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u, u
 
         if(u->sha1_ctx)
             SHA1_Update(&u->sha1_ctx->sha1, buf, len);
+
+        if(u->calculate_crc32)
+            ngx_crc32_update(&u->crc32, buf, len);
 
         if(ngx_write_file(&u->output_file, buf, len, u->output_file.offset) == NGX_ERROR) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
@@ -1074,14 +1094,18 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         if(prev->md5) {
             conf->md5 = prev->md5;
         }
-    }
-
-    if(conf->field_filters == NULL) {
-        conf->field_filters = prev->field_filters;
 
         if(prev->sha1) {
             conf->sha1 = prev->sha1;
         }
+
+        if(prev->crc32) {
+            conf->crc32 = prev->crc32;
+        }
+    }
+
+    if(conf->field_filters == NULL) {
+        conf->field_filters = prev->field_filters;
     }
 
     if(conf->cleanup_statuses == NULL) {
@@ -1214,6 +1238,32 @@ ngx_http_upload_sha1_variable(ngx_http_request_t *r,
     return NGX_OK;
 } /* }}} */
 
+static ngx_int_t /* {{{ ngx_http_upload_crc32_variable */
+ngx_http_upload_crc32_variable(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v,  uintptr_t data)
+{
+    ngx_http_upload_ctx_t  *u;
+    u_char                 *p;
+    uint32_t               *value;
+
+    u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
+
+    value = (uint32_t *) ((char *) u + data);
+
+    p = ngx_palloc(r->pool, NGX_INT_T_LEN);
+    if (p == NULL) {
+        return NGX_ERROR;
+    }
+
+    v->len = ngx_sprintf(p, "%08uxd", *value) - p;
+    v->valid = 1;
+    v->no_cacheable = 0;
+    v->not_found = 0;
+    v->data = p;
+
+    return NGX_OK;
+} /* }}} */
+
 static ngx_int_t /* {{{ ngx_http_upload_file_size_variable */
 ngx_http_upload_file_size_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v,  uintptr_t data)
@@ -1340,6 +1390,7 @@ ngx_http_upload_set_form_field(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                                        ", upload_file_md5_uc"
                                        ", upload_file_sha1"
                                        ", upload_file_sha1_uc"
+                                       ", upload_file_crc32"
                                        " and upload_file_size"
                                        " could be specified only in upload_aggregate_form_field directive");
                     return NGX_CONF_ERROR;
@@ -1350,6 +1401,9 @@ ngx_http_upload_set_form_field(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
                 if(v->get_handler == ngx_http_upload_sha1_variable)
                     ulcf->sha1 = 1;
+
+                if(v->get_handler == ngx_http_upload_crc32_variable)
+                    ulcf->crc32 = 1;
             }
         }
     }
