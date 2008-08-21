@@ -9,6 +9,8 @@ Version 2.0.5
    failure of a backend.
  * Added feature: aggregate variable upload_file_crc32 allows to calculate
    CRC32 if file on the fly.
+ * Fixed bug: Indicator of necessity to calculate SHA1 sum was not inheritable
+   from server configuration.
 
 Version 2.0.4
  * Fixed bug: location configuration of upload_set_form_field and upload_pass_form_field
