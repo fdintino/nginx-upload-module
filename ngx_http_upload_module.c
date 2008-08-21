@@ -150,7 +150,7 @@ typedef struct ngx_http_upload_ctx_s {
     ngx_chain_t         *checkpoint;
     size_t              output_body_len;
 
-    ngx_http_cleanup_t          *cln;
+    ngx_pool_cleanup_t          *cln;
 
     ngx_http_upload_md5_ctx_t   *md5_ctx;    
     ngx_http_upload_sha1_ctx_t  *sha1_ctx;    
@@ -660,7 +660,7 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
     ngx_upload_cleanup_t  *ucln;
 
     if(u->is_file) {
-        u->cln = ngx_http_cleanup_add(r, sizeof(ngx_upload_cleanup_t));
+        u->cln = ngx_pool_cleanup_add(r->pool, sizeof(ngx_upload_cleanup_t));
 
         if(u->cln == NULL)
             return NGX_UPLOAD_NOMEM;
