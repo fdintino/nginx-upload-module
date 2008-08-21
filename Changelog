@@ -7,6 +7,8 @@ Version 2.0.5
  * Added feature: directive upload_cleanup now specifies statuses,
    which initiate removal of uploaded files. Used for cleanup after
    failure of a backend.
+ * Added feature: aggregate variable upload_file_crc32 allows to calculate
+   CRC32 if file on the fly.
 
 Version 2.0.4
  * Fixed bug: location configuration of upload_set_form_field and upload_pass_form_field
