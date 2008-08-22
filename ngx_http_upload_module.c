@@ -667,7 +667,7 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
 
         file->name.len = path->name.len + 1 + path->len + 10;
 
-        file->name.data = ngx_palloc(u->request->pool, file->name.len + 1);
+        file->name.data = ngx_pnalloc(u->request->pool, file->name.len + 1);
 
         if(file->name.data == NULL)
             return NGX_UPLOAD_NOMEM;
@@ -817,9 +817,10 @@ static void ngx_http_upload_finish_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
     ngx_http_upload_loc_conf_t  *ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
     ngx_uint_t  i;
     ngx_int_t   rc;
-    ngx_upload_cleanup_t  *ucln = u->cln->data;
+    ngx_upload_cleanup_t  *ucln;
 
     if(u->is_file) {
+        ucln = u->cln->data;
         ucln->fd = -1;
 
         ngx_close_file(u->output_file.fd);
@@ -880,7 +881,7 @@ rollback:
 } /* }}} */
 
 static void ngx_http_upload_abort_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
-    ngx_upload_cleanup_t  *ucln = u->cln->data;
+    ngx_upload_cleanup_t  *ucln;
 
     if(u->is_file) {
         /*
@@ -891,6 +892,7 @@ static void ngx_http_upload_abort_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
          * in order to save additional resources, instead we mark existing
          * cleanup record as aborted.
          */
+        ucln = u->cln->data;
         ucln->fd = -1;
         ucln->aborted = 1;
 
