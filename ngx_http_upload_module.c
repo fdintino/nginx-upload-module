@@ -667,7 +667,7 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
 
         file->name.len = path->name.len + 1 + path->len + 10;
 
-        file->name.data = ngx_pnalloc(u->request->pool, file->name.len + 1);
+        file->name.data = ngx_palloc(u->request->pool, file->name.len + 1);
 
         if(file->name.data == NULL)
             return NGX_UPLOAD_NOMEM;
