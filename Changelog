@@ -1,4 +1,7 @@
 
+Version 2.0.5
+ * Fixed bug: prevent leaking of file descriptor on a timeout.
+
 Version 2.0.4
  * Fixed bug: location configuration of upload_set_form_field and upload_pass_form_field
    was not inheritable from server configuration.
