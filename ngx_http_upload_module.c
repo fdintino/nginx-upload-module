@@ -845,7 +845,7 @@ static void ngx_http_upload_finish_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
             for (i = 0; i < ulcf->aggregate_field_templates->nelts; i++) {
 
                 if (af[i].field_lengths == NULL) {
-                    aggregate_field_value = af[i].value.value;
+                    aggregate_field_name = af[i].value.key;
                 }else{
                     if (ngx_http_script_run(r, &aggregate_field_name, af[i].field_lengths->elts, 0,
                         af[i].field_values->elts) == NULL)
@@ -1009,30 +1009,34 @@ ngx_http_upload_append_field(ngx_http_upload_ctx_t *u, ngx_str_t *name, ngx_str_
     ngx_buf_t *b;
     ngx_chain_t *cl;
 
-    b = ngx_palloc(u->request->pool, 5 * sizeof(ngx_buf_t));
+    if(name->len > 0) {
+        b = ngx_palloc(u->request->pool, value->len > 0 ?
+            5 * sizeof(ngx_buf_t) : 4 * sizeof(ngx_buf_t));
 
-    if (b == NULL) {
-        return NGX_UPLOAD_NOMEM;
+        if (b == NULL) {
+            return NGX_UPLOAD_NOMEM;
+        }
+
+        cl = ngx_palloc(u->request->pool, value->len > 0 ?
+            5 * sizeof(ngx_chain_t) : 4 * sizeof(ngx_chain_t));
+
+        if (cl == NULL) {
+            return NGX_UPLOAD_NOMEM;
+        }
+
+        ngx_http_upload_append_str(u, b, cl, &boundary);
+
+        ngx_http_upload_append_str(u, b + 1, cl + 1, &ngx_upload_field_part1);
+
+        ngx_http_upload_append_str(u, b + 2, cl + 2, name);
+
+        ngx_http_upload_append_str(u, b + 3, cl + 3, &ngx_upload_field_part2);
+
+        if(value->len > 0)
+            ngx_http_upload_append_str(u, b + 4, cl + 4, value);
+
+        u->first_part = 0;
     }
-
-    cl = ngx_palloc(u->request->pool, 5 * sizeof(ngx_chain_t));
-
-    if (cl == NULL) {
-        return NGX_UPLOAD_NOMEM;
-    }
-
-    ngx_http_upload_append_str(u, b, cl, &boundary);
-
-    ngx_http_upload_append_str(u, b + 1, cl + 1, &ngx_upload_field_part1);
-
-    ngx_http_upload_append_str(u, b + 2, cl + 2, name);
-
-    ngx_http_upload_append_str(u, b + 3, cl + 3, &ngx_upload_field_part2);
-
-    if(value->len > 0)
-        ngx_http_upload_append_str(u, b + 4, cl + 4, value);
-
-    u->first_part = 0;
 
     return NGX_OK;
 } /* }}} */
@@ -1954,7 +1958,7 @@ static ngx_int_t upload_parse_part_header(ngx_http_upload_ctx_t *upload_ctx, cha
 
                 if(*fieldname_end != '\"') {
                     ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
-                                   "malformed filename in part header");
+                                   "malformed fieldname in part header");
                     return NGX_UPLOAD_MALFORMED;
                 }
 
