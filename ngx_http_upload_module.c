@@ -221,7 +221,7 @@ static void ngx_upload_cleanup_handler(void *data);
  *     upload_ctx -- upload context which is being initialized
  * 
  */
-void upload_init_ctx(ngx_http_upload_ctx_t *upload_ctx);
+static void upload_init_ctx(ngx_http_upload_ctx_t *upload_ctx);
 
 /*
  * upload_shutdown_ctx
@@ -233,7 +233,7 @@ void upload_init_ctx(ngx_http_upload_ctx_t *upload_ctx);
  *     upload_ctx -- upload context which is being shut down
  * 
  */
-void upload_shutdown_ctx(ngx_http_upload_ctx_t *upload_ctx);
+static void upload_shutdown_ctx(ngx_http_upload_ctx_t *upload_ctx);
 
 /*
  * upload_start
@@ -249,7 +249,7 @@ void upload_shutdown_ctx(ngx_http_upload_ctx_t *upload_ctx);
  *               NGX_ERROR if error has occured
  *
  */
-ngx_int_t upload_start(ngx_http_upload_ctx_t *upload_ctx, ngx_http_upload_loc_conf_t  *ulcf);
+static ngx_int_t upload_start(ngx_http_upload_ctx_t *upload_ctx, ngx_http_upload_loc_conf_t  *ulcf);
 
 /*
  * upload_parse_content_type
@@ -265,7 +265,7 @@ ngx_int_t upload_start(ngx_http_upload_ctx_t *upload_ctx, ngx_http_upload_loc_co
  *     NGX_OK on success
  *     NGX_ERROR if error has occured
  */
-ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ngx_str_t *content_type);
+static ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ngx_str_t *content_type);
 
 /*
  * upload_process_buf
@@ -282,7 +282,7 @@ ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ngx_str_t
  *               NGX_UPLOAD_SCRIPTERROR nginx script engine failed
  *               NGX_UPLOAD_TOOLARGE field body is too large
  */
-ngx_int_t upload_process_buf(ngx_http_upload_ctx_t *upload_ctx, u_char *start, u_char *end);
+static ngx_int_t upload_process_buf(ngx_http_upload_ctx_t *upload_ctx, u_char *start, u_char *end);
 
 static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
 
@@ -790,7 +790,7 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
             }
         }
 
-        if(pass_field) { 
+        if(pass_field && u->field_name.len > 0) { 
             /*
              * Here we do a small hack: the content of a normal field
              * is not known until ngx_http_upload_flush_output_buffer
@@ -2043,7 +2043,7 @@ static void upload_flush_output_buffer(ngx_http_upload_ctx_t *upload_ctx) { /* {
     }
 } /* }}} */
 
-void upload_init_ctx(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
+static void upload_init_ctx(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
     upload_ctx->boundary.data = upload_ctx->boundary_start = upload_ctx->boundary_pos = 0;
 
 	upload_ctx->state = upload_state_boundary_seek;
@@ -2065,7 +2065,7 @@ void upload_init_ctx(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
 	upload_ctx->flush_output_buffer_f = ngx_http_upload_flush_output_buffer;
 } /* }}} */
 
-void upload_shutdown_ctx(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
+static void upload_shutdown_ctx(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
 	if(upload_ctx != 0) {
         // Abort file if we still processing it
         if(upload_ctx->state == upload_state_data) {
@@ -2077,7 +2077,7 @@ void upload_shutdown_ctx(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
 	}
 } /* }}} */
 
-ngx_int_t upload_start(ngx_http_upload_ctx_t *upload_ctx, ngx_http_upload_loc_conf_t *ulcf) { /* {{{ */
+static ngx_int_t upload_start(ngx_http_upload_ctx_t *upload_ctx, ngx_http_upload_loc_conf_t *ulcf) { /* {{{ */
 	if(upload_ctx == NULL)
 		return NGX_ERROR;
 
@@ -2104,7 +2104,7 @@ ngx_int_t upload_start(ngx_http_upload_ctx_t *upload_ctx, ngx_http_upload_loc_co
 	return NGX_OK;
 } /* }}} */
 
-ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ngx_str_t *content_type) { /* {{{ */
+static ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ngx_str_t *content_type) { /* {{{ */
     // Find colon in content type string, which terminates mime type
     u_char *mime_type_end_ptr = (u_char*) ngx_strchr(content_type->data, ';');
     u_char *boundary_start_ptr, *boundary_end_ptr;
@@ -2168,7 +2168,7 @@ ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ngx_str_t
     return NGX_OK;
 } /* }}} */
 
-void upload_putc(ngx_http_upload_ctx_t *upload_ctx, u_char c) { /* {{{ */
+static void upload_putc(ngx_http_upload_ctx_t *upload_ctx, u_char c) { /* {{{ */
     if(!upload_ctx->discard_data) {
         *upload_ctx->output_buffer_pos = c;
 
@@ -2179,7 +2179,7 @@ void upload_putc(ngx_http_upload_ctx_t *upload_ctx, u_char c) { /* {{{ */
     }
 } /* }}} */
 
-ngx_int_t upload_process_buf(ngx_http_upload_ctx_t *upload_ctx, u_char *start, u_char *end) { /* {{{ */
+static ngx_int_t upload_process_buf(ngx_http_upload_ctx_t *upload_ctx, u_char *start, u_char *end) { /* {{{ */
 
 	u_char *p;
     ngx_int_t rc;
