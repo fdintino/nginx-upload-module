@@ -1,4 +1,8 @@
 
+Version 2.0.6
+ * Fixed bug: zero variables in aggregate field name caused allocation
+   of random amount of memory
+
 Version 2.0.5
  * Fixed bug: prevent leaking of file descriptors on a timeout (unconfirmed problem).
  * Fixed bug: variables in field values in upload_set_form_field and
