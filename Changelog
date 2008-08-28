@@ -1,7 +1,7 @@
 
 Version 2.0.6
  * Fixed bug: zero variables in aggregate field name caused allocation
-   of random amount of memory
+   of random amount of memory. Thanks to Dmitry Dedukhin.
  * Fixed bug: Prevent generation of a field in case of empty field name
 
 Version 2.0.5
