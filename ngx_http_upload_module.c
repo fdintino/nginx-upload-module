@@ -30,8 +30,8 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u);
 static void ngx_http_upload_finish_handler(ngx_http_upload_ctx_t *u);
 static void ngx_http_upload_abort_handler(ngx_http_upload_ctx_t *u);
 
-static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u,
-    u_char *buf, size_t len);
+static ngx_int_t ngx_http_upload_process_chain(ngx_http_upload_ctx_t *u,
+    ngx_chain_t *chain);
 static ngx_int_t ngx_http_upload_append_field(ngx_http_upload_ctx_t *u,
     ngx_str_t *name, ngx_str_t *value);
 
@@ -137,7 +137,7 @@ static ngx_upload_content_filter_t ngx_write_content_filter = {
     ngx_http_upload_start_handler,
     ngx_http_upload_finish_handler,
     ngx_http_upload_abort_handler,
-    ngx_http_upload_flush_output_buffer
+    ngx_http_upload_process_chain
 };
 
 static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
@@ -285,6 +285,10 @@ static ngx_http_variable_t  ngx_http_upload_variables[] = { /* {{{ */
 
     { ngx_string("upload_tmp_path"), NULL, ngx_http_upload_variable,
       (uintptr_t) offsetof(ngx_http_upload_ctx_t, output_file.name),
+      NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH, 0 },
+
+    { ngx_string("upload_archive_path"), NULL, ngx_http_upload_variable,
+      (uintptr_t) offsetof(ngx_http_upload_ctx_t, archive_path),
       NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH, 0 },
 
     { ngx_null_string, NULL, NULL, 0, 0, 0 }
@@ -604,7 +608,7 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
             SHA1_Init(&u->sha1_ctx->sha1);
 
         ngx_log_error(NGX_LOG_INFO, r->connection->log, 0
-            , "started uploading file \"%V\" to \"%V\" (field \"%V\", content type \"%V\")"
+            , "started writing file \"%V\" to \"%V\" (field \"%V\", content type \"%V\")"
             , &u->file_name
             , &u->output_file.name
             , &u->field_name
@@ -670,7 +674,7 @@ static void ngx_http_upload_finish_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
         ngx_close_file(u->output_file.fd);
 
         ngx_log_error(NGX_LOG_INFO, r->connection->log, 0
-            , "finished uploading file \"%V\" to \"%V\""
+            , "finished writing file \"%V\" to \"%V\""
             , &u->file_name
             , &u->output_file.name
             );
@@ -729,12 +733,12 @@ static void ngx_http_upload_abort_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
 
         if(ngx_delete_file(u->output_file.name.data) == NGX_FILE_ERROR) { 
             ngx_log_error(NGX_LOG_ERR, u->log, ngx_errno
-                , "aborted uploading file \"%V\" to \"%V\", failed to remove destination file"
+                , "aborted writing file \"%V\" to \"%V\", failed to remove destination file"
                 , &u->file_name
                 , &u->output_file.name);
         } else {
             ngx_log_error(NGX_LOG_ALERT, u->log, 0
-                , "aborted uploading file \"%V\" to \"%V\", dest file removed"
+                , "aborted writing file \"%V\" to \"%V\", dest file removed"
                 , &u->file_name
                 , &u->output_file.name);
         }
@@ -750,49 +754,57 @@ static void ngx_http_upload_abort_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
     }
 } /* }}} */
 
-static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u, u_char *buf, size_t len) { /* {{{ */
-    ngx_http_request_t             *r = u->request;
+static ngx_int_t ngx_http_upload_process_chain(ngx_http_upload_ctx_t *u, ngx_chain_t *chain) { /* {{{ */
     ngx_buf_t                      *b;
     ngx_chain_t                    *cl;
 
     if(u->is_file) {
-        if(u->md5_ctx)
-            MD5Update(&u->md5_ctx->md5, buf, len);
+        if(u->md5_ctx || u->sha1_ctx) {
+            for(cl = chain; cl && !cl->buf->last_in_chain; cl = cl->next) {
+                if(u->md5_ctx)
+                    MD5Update(&u->md5_ctx->md5, cl->buf->pos, cl->buf->last - cl->buf->pos);
 
-        if(u->sha1_ctx)
-            SHA1_Update(&u->sha1_ctx->sha1, buf, len);
+                if(u->sha1_ctx)
+                    SHA1_Update(&u->sha1_ctx->sha1, cl->buf->pos, cl->buf->last - cl->buf->pos);
+            }
+        }
 
-        if(ngx_write_file(&u->output_file, buf, len, u->output_file.offset) == NGX_ERROR) {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
-                           "write to file \"%V\" failed", &u->output_file.name);
+        if(ngx_write_chain_to_file(&u->output_file, chain, u->output_file.offset,
+             u->request->pool) == NGX_ERROR) {
             return NGX_UPLOAD_IOERROR;
-        }else
-            return NGX_OK;
+        }
+
+        for(cl = chain; cl; cl = cl->next)
+            cl->buf->pos = cl->buf->last;
+
+        return NGX_OK;
     }else{
-        b = ngx_create_temp_buf(u->request->pool, len);
+        for(cl = chain; cl && !cl->buf->last_in_chain; cl = cl->next) {
+            b = ngx_create_temp_buf(u->request->pool, cl->buf->last - cl->buf->pos);
 
-        if (b == NULL) {
-            return NGX_ERROR;
-        }
+            if (b == NULL) {
+                return NGX_ERROR;
+            }
 
-        cl = ngx_alloc_chain_link(u->request->pool);
-        if (cl == NULL) {
-            return NGX_ERROR;
-        }
+            cl = ngx_alloc_chain_link(u->request->pool);
+            if (cl == NULL) {
+                return NGX_ERROR;
+            }
 
-        b->last_in_chain = 0;
+            b->last_in_chain = 0;
 
-        cl->buf = b;
-        cl->next = NULL;
+            cl->buf = b;
+            cl->next = NULL;
 
-        b->last = ngx_cpymem(b->last, buf, len);
+            b->last = ngx_cpymem(b->last, cl->buf->pos, cl->buf->last - cl->buf->pos);
 
-        if(u->chain == NULL) {
-            u->chain = cl;
-            u->last = cl;
-        }else{
-            u->last->next = cl;
-            u->last = cl;
+            if(u->chain == NULL) {
+                u->chain = cl;
+                u->last = cl;
+            }else{
+                u->last->next = cl;
+                u->last = cl;
+            }
         }
 
         return NGX_OK;
@@ -1954,6 +1966,16 @@ ngx_upload_set_file_name(ngx_http_upload_ctx_t *ctx,
     return NGX_OK;
 } /* }}} */
 
+ngx_int_t /* {{{ ngx_upload_set_archive_path */
+ngx_upload_set_archive_path(ngx_http_upload_ctx_t *ctx,
+    ngx_str_t *archive_path)
+{
+    ctx->archive_path.data = archive_path->data;
+    ctx->archive_path.len = archive_path->len;
+
+    return NGX_OK;
+} /* }}} */
+
 static ngx_int_t /* {{{ ngx_upload_set_content_filter */
 ngx_upload_set_content_filter(ngx_http_upload_ctx_t *u, ngx_str_t *content_type)
 {
@@ -1984,15 +2006,18 @@ ngx_upload_set_content_filter(ngx_http_upload_ctx_t *u, ngx_str_t *content_type)
 } /* }}} */
 
 static ngx_int_t upload_start_file(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
-    ngx_str_t                 exten, content_type;
+    ngx_str_t                 exten, content_type = ngx_null_string;
     ngx_upload_content_filter_t*  cflt;
 
     upload_ctx->start_part_f = ngx_http_upload_start_handler;
     upload_ctx->finish_part_f = ngx_http_upload_finish_handler;
     upload_ctx->abort_part_f = ngx_http_upload_abort_handler;
-    upload_ctx->flush_output_buffer_f = ngx_http_upload_flush_output_buffer;
+    upload_ctx->process_chain_f = ngx_http_upload_process_chain;
 
     if(upload_ctx->is_file) {
+        upload_ctx->archive_path.data = NULL;
+        upload_ctx->archive_path.len = 0;
+
         ngx_upload_set_exten(upload_ctx, &exten);
 
         ngx_upload_resolve_content_type(upload_ctx, &exten, &content_type);
@@ -2010,7 +2035,7 @@ static ngx_int_t upload_start_file(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ *
         upload_ctx->start_part_f = cflt->start;
         upload_ctx->finish_part_f = cflt->finish;
         upload_ctx->abort_part_f = cflt->abort;
-        upload_ctx->flush_output_buffer_f = cflt->process_buf;
+        upload_ctx->process_chain_f = cflt->process_chain;
     }
 
     // Call user-defined event handler
@@ -2040,13 +2065,19 @@ static void upload_abort_file(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
 } /* }}} */
 
 static void upload_flush_output_buffer(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
-    if(upload_ctx->output_buffer_pos > upload_ctx->output_buffer) {
-        if(upload_ctx->flush_output_buffer_f)
-            if(upload_ctx->flush_output_buffer_f(upload_ctx, (void*)upload_ctx->output_buffer, 
-                (size_t)(upload_ctx->output_buffer_pos - upload_ctx->output_buffer)) != NGX_OK)
-                upload_ctx->discard_data = 1;
+    ngx_chain_t chain = { upload_ctx->output_buffer, NULL };
 
-        upload_ctx->output_buffer_pos = upload_ctx->output_buffer;	
+    if(upload_ctx->output_buffer->pos > upload_ctx->output_buffer->start) {
+        if(upload_ctx->process_chain_f) {
+            upload_ctx->output_buffer->last = upload_ctx->output_buffer->pos;
+            upload_ctx->output_buffer->pos = upload_ctx->output_buffer->start;
+
+            if(upload_ctx->process_chain_f(upload_ctx, &chain) != NGX_OK) {
+                upload_ctx->discard_data = 1;
+            }
+        }
+
+        upload_ctx->output_buffer->pos = upload_ctx->output_buffer->start;	
     }
 } /* }}} */
 
@@ -2091,13 +2122,10 @@ ngx_int_t upload_start(ngx_http_upload_ctx_t *upload_ctx, ngx_http_upload_loc_co
 	upload_ctx->header_accumulator_pos = upload_ctx->header_accumulator;
 	upload_ctx->header_accumulator_end = upload_ctx->header_accumulator + ulcf->max_header_len;
 
-	upload_ctx->output_buffer = ngx_pcalloc(upload_ctx->request->pool, ulcf->buffer_size);
+	upload_ctx->output_buffer = ngx_create_temp_buf(upload_ctx->request->pool, ulcf->buffer_size);
 
 	if(upload_ctx->output_buffer == NULL)
 		return NGX_ERROR;
-
-    upload_ctx->output_buffer_pos = upload_ctx->output_buffer;
-    upload_ctx->output_buffer_end = upload_ctx->output_buffer + ulcf->buffer_size;
 
     upload_ctx->header_accumulator_pos = upload_ctx->header_accumulator;
 
@@ -2172,11 +2200,9 @@ ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ngx_str_t
 
 void upload_putc(ngx_http_upload_ctx_t *upload_ctx, u_char c) { /* {{{ */
     if(!upload_ctx->discard_data) {
-        *upload_ctx->output_buffer_pos = c;
+        *upload_ctx->output_buffer->pos++ = c;
 
-        upload_ctx->output_buffer_pos++;
-
-        if(upload_ctx->output_buffer_pos == upload_ctx->output_buffer_end)
+        if(upload_ctx->output_buffer->pos == upload_ctx->output_buffer->end)
             upload_flush_output_buffer(upload_ctx);	
     }
 } /* }}} */
@@ -2239,7 +2265,7 @@ ngx_int_t upload_process_buf(ngx_http_upload_ctx_t *upload_ctx, u_char *start, u
                                 return rc; // User requested to cancel processing
                             } else {
                                 upload_ctx->state = upload_state_data;
-                                upload_ctx->output_buffer_pos = upload_ctx->output_buffer;	
+                                upload_ctx->output_buffer->pos = upload_ctx->output_buffer->start;	
                             }
                         } else {
                             *upload_ctx->header_accumulator_pos = '\0';

@@ -82,7 +82,7 @@ typedef struct {
     ngx_int_t (*start)(struct ngx_http_upload_ctx_s *upload_ctx);
     void (*finish)(struct ngx_http_upload_ctx_s *upload_ctx);
     void (*abort)(struct ngx_http_upload_ctx_s *upload_ctx);
-	ngx_int_t (*process_buf)(struct ngx_http_upload_ctx_s *upload_ctx, u_char *buf, size_t len);
+	ngx_int_t (*process_chain)(struct ngx_http_upload_ctx_s *upload_ctx, ngx_chain_t *chain);
 } ngx_upload_content_filter_t;
 
 /*
@@ -144,15 +144,14 @@ typedef struct ngx_http_upload_ctx_s {
     ngx_str_t           field_name;
     ngx_str_t           file_name;
     ngx_str_t           content_type;
+    ngx_str_t           archive_path;
 
-    u_char              *output_buffer;
-    u_char              *output_buffer_end;
-    u_char              *output_buffer_pos;
+    ngx_buf_t           *output_buffer;
 
     ngx_int_t (*start_part_f)(struct ngx_http_upload_ctx_s *upload_ctx);
     void (*finish_part_f)(struct ngx_http_upload_ctx_s *upload_ctx);
     void (*abort_part_f)(struct ngx_http_upload_ctx_s *upload_ctx);
-	ngx_int_t (*flush_output_buffer_f)(struct ngx_http_upload_ctx_s *upload_ctx, u_char *buf, size_t len);
+	ngx_int_t (*process_chain_f)(struct ngx_http_upload_ctx_s *upload_ctx, ngx_chain_t *chain);
 
     ngx_http_request_t  *request;
     ngx_log_t           *log;
@@ -180,6 +179,7 @@ ngx_module_t  ngx_http_upload_module;
 
 ngx_int_t ngx_upload_set_file_name(ngx_http_upload_ctx_t *ctx, ngx_str_t *file_name);
 ngx_int_t ngx_upload_set_content_type(ngx_http_upload_ctx_t *ctx, ngx_str_t *content_type);
+ngx_int_t ngx_upload_set_archive_path(ngx_http_upload_ctx_t *ctx, ngx_str_t *archive_path);
 
 ngx_upload_content_filter_t*
 ngx_upload_get_next_content_filter(ngx_http_upload_ctx_t *ctx);
