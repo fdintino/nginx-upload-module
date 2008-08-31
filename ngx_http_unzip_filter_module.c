@@ -25,7 +25,16 @@
 #define ZIP_METHOD_STORED                   0
 #define ZIP_METHOD_DEFLATED                 8
 
-#define ZIP_FLAG_HAVE_DATA_DESC             0x0008
+#define ZIP_FLAG_ENCRYPTED                  0x0001
+#define ZIP_FLAG_UNLIMITED                  0x0008
+#define ZIP_FLAG_RESERVED1                  0x0010
+#define ZIP_FLAG_PATCH                      0x0020
+#define ZIP_FLAG_STRONG_ENCRYPTION          0x0040
+#define ZIP_FLAG_USE_UTF8                   0x0800
+#define ZIP_FLAG_RESERVED2                  0x1000
+#define ZIP_FLAG_LOCAL_HEADER_OBFUSCATED    0x2000
+#define ZIP_FLAG_RESERVED3                  0x4000
+#define ZIP_FLAG_RESERVED4                  0x8000
 
 #define ZIP_VERSION                         20
 
@@ -62,6 +71,7 @@ typedef enum {
     unzip_state_file_name,
     unzip_state_extra_field,
     unzip_state_file_data,
+    unzip_state_unlimited_file_data,
     unzip_state_data_descriptor,
     unzip_state_decryption_header,
     unzip_state_extra_data_record,
@@ -143,7 +153,7 @@ typedef struct ngx_unzip_ctx_s {
 
     uint16_t            version_needed;
     uint16_t            flags;
-    uint16_t            compression_method_number;
+    uint16_t            compression_method;
     uint16_t            last_mod_time;
     uint16_t            last_mod_date;
     uint32_t            crc32;
@@ -162,6 +172,8 @@ typedef struct ngx_unzip_ctx_s {
     ngx_http_upload_ctx_t       *upload_ctx;
     ngx_upload_content_filter_t *next_content_filter; 
     ngx_unzip_decompression_method_t *decompression_method;
+
+    uint32_t            calculated_crc32;
 
     unsigned int        discard_data:1;
 } ngx_unzip_ctx_t;
@@ -241,6 +253,9 @@ static ngx_command_t  ngx_http_unzip_filter_commands[] = { /* {{{ */
       offsetof(ngx_unzip_conf_t, bufs),
       NULL },
 
+    /*
+     * Specifies size window to use for decompressing
+     */
     { ngx_string("unzip_window"),
       NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
@@ -248,6 +263,10 @@ static ngx_command_t  ngx_http_unzip_filter_commands[] = { /* {{{ */
       offsetof(ngx_unzip_conf_t, wbits),
       &ngx_http_unzip_window_p },
 
+    /*
+     * Specifies a form field with a special content to generate
+     * in output form
+     */
     { ngx_string("unzip_set_form_field"),
       NGX_HTTP_LOC_CONF|NGX_CONF_TAKE2,
       ngx_conf_set_size_slot,
@@ -255,11 +274,25 @@ static ngx_command_t  ngx_http_unzip_filter_commands[] = { /* {{{ */
       offsetof(ngx_unzip_conf_t, wbits),
       NULL },
 
+    /*
+     * Specifies a form field with a special aggregate content to generate
+     * in output form
+     */
     { ngx_string("unzip_aggregate_form_field"),
       NGX_HTTP_LOC_CONF|NGX_CONF_TAKE2,
       ngx_conf_set_size_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_unzip_conf_t, wbits),
+      NULL },
+
+    /*
+     * Specifies the maximal length of a file name in archive
+     */
+    { ngx_string("unzip_max_file_name_len"),
+      NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_size_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_unzip_conf_t, max_file_name_len),
       NULL },
 
       ngx_null_command
@@ -323,10 +356,11 @@ static ngx_int_t /* {{{ ngx_http_unzip_process_chain */
 ngx_http_unzip_process_chain(ngx_unzip_ctx_t *ctx, ngx_chain_t *chain) {
     ngx_int_t result;
     ngx_buf_t *buf;
+    ngx_unzip_conf_t *uzcf;
 
-    while(chain != NULL && !chain->buf->last_in_chain) {
-        buf = chain->buf;
+    uzcf = ngx_http_get_module_loc_conf(ctx->upload_ctx->request, ngx_http_unzip_filter_module); 
 
+    while(chain != NULL) {
         for(buf = chain->buf ; buf->pos != buf->last ; buf->pos++) {
             switch(ctx->state) {
                 case unzip_state_signature: /* {{{ */
@@ -375,7 +409,7 @@ ngx_http_unzip_process_chain(ngx_unzip_ctx_t *ctx, ngx_chain_t *chain) {
 
                         ctx->version_needed = EXTRACT_SHORT(ctx->current_field);
                         ctx->flags = EXTRACT_SHORT(ctx->current_field + 2);
-                        ctx->compression_method_number = EXTRACT_SHORT(ctx->current_field + 4);
+                        ctx->compression_method = EXTRACT_SHORT(ctx->current_field + 4);
                         ctx->last_mod_time = EXTRACT_SHORT(ctx->current_field + 6);
                         ctx->last_mod_date = EXTRACT_SHORT(ctx->current_field + 8);
                         ctx->crc32 = EXTRACT_LONG(ctx->current_field + 10);
@@ -385,14 +419,22 @@ ngx_http_unzip_process_chain(ngx_unzip_ctx_t *ctx, ngx_chain_t *chain) {
                         ctx->file_name_len = EXTRACT_SHORT(ctx->current_field + 22);
                         ctx->extra_field_len = EXTRACT_SHORT(ctx->current_field + 24);
 
+                        if(uzcf->max_file_name_len > 0 && ctx->file_name_len > uzcf->max_file_name_len) {
+                            ngx_log_error(NGX_LOG_ALERT, ctx->log, 0,
+                                  "file name in is too long: %u", ctx->file_name_len);
+                            return NGX_UNZIP_MALFORMED;
+                        }
+
                         if(ngx_http_unzip_set_decompression_method(ctx,
-                            ctx->compression_method_number) != NGX_OK) 
+                            ctx->compression_method) != NGX_OK) 
                         {
                             return NGX_UNZIP_MALFORMED;
                         } 
 
                         if(ctx->version_needed > ZIP_VERSION)
                         {
+                            ngx_log_error(NGX_LOG_ALERT, ctx->log, 0,
+                                  "more recent version of unzip implementation required: %u, have %u", ctx->version_needed, ZIP_VERSION);
                             return NGX_UNZIP_MALFORMED;
                         }
 
@@ -400,9 +442,11 @@ ngx_http_unzip_process_chain(ngx_unzip_ctx_t *ctx, ngx_chain_t *chain) {
                             ctx->state = unzip_state_file_name;
                         else if(ctx->extra_field_len > 0)
                             ctx->state = unzip_state_extra_field;
+                        else if(ctx->flags & ZIP_FLAG_UNLIMITED)
+                            ctx->state = unzip_state_unlimited_file_data;
                         else if(ctx->compressed_size > 0)
                             ctx->state = unzip_state_file_data;
-                        else if(ctx->flags & ZIP_FLAG_HAVE_DATA_DESC)
+                        else if(ctx->flags & ZIP_FLAG_UNLIMITED)
                             ctx->state = unzip_state_data_descriptor;
                         else
                             ctx->state = unzip_state_signature;
@@ -412,7 +456,7 @@ ngx_http_unzip_process_chain(ngx_unzip_ctx_t *ctx, ngx_chain_t *chain) {
                     if(ctx->current_field_pos == 0) {
                         ctx->file_name.len = ctx->file_name_len;
 
-                        ctx->file_name.data = ngx_palloc(ctx->pool, ctx->file_name_len + 1);
+                        ctx->file_name.data = ngx_palloc(ctx->pool, ctx->file_name_len);
 
                         if(ctx->file_name.data == NULL) {
                             return NGX_UPLOAD_NOMEM;
@@ -428,17 +472,17 @@ ngx_http_unzip_process_chain(ngx_unzip_ctx_t *ctx, ngx_chain_t *chain) {
                     if(ctx->current_field_pos == ctx->current_field_len) {
                         ctx->current_field_pos = 0;
 
-                        *ctx->current_field_ptr = '\0';
-
                         if(ngx_http_unzip_parse_file_name(ctx, &ctx->file_name) != NGX_OK) {
                             return NGX_UNZIP_MALFORMED;
                         }
 
                         if(ctx->extra_field_len > 0)
                             ctx->state = unzip_state_extra_field;
+                        else if(ctx->flags & ZIP_FLAG_UNLIMITED)
+                            ctx->state = unzip_state_unlimited_file_data;
                         else if(ctx->compressed_size > 0)
                             ctx->state = unzip_state_file_data;
-                        else if(ctx->flags & ZIP_FLAG_HAVE_DATA_DESC)
+                        else if(ctx->flags & ZIP_FLAG_UNLIMITED)
                             ctx->state = unzip_state_data_descriptor;
                         else
                             ctx->state = unzip_state_signature;
@@ -454,15 +498,17 @@ ngx_http_unzip_process_chain(ngx_unzip_ctx_t *ctx, ngx_chain_t *chain) {
                     if(ctx->current_field_pos == ctx->current_field_len) {
                         ctx->current_field_pos = 0;
 
-                        if(ctx->compressed_size > 0)
+                        if(ctx->flags & ZIP_FLAG_UNLIMITED)
+                            ctx->state = unzip_state_unlimited_file_data;
+                        else if(ctx->compressed_size > 0)
                             ctx->state = unzip_state_file_data;
-                        else if(ctx->flags & ZIP_FLAG_HAVE_DATA_DESC)
+                        else if(ctx->flags & ZIP_FLAG_UNLIMITED)
                             ctx->state = unzip_state_data_descriptor;
                         else
                             ctx->state = unzip_state_signature;
                     }
                     break;
-                case unzip_state_file_data:
+                case unzip_state_file_data: /* {{{ */
                     if(ctx->current_field_pos == 0) {
                         ctx->current_field_len = ctx->compressed_size;
 
@@ -496,12 +542,43 @@ ngx_http_unzip_process_chain(ngx_unzip_ctx_t *ctx, ngx_chain_t *chain) {
 
                         ctx->current_field_pos = 0;
 
-                        if(ctx->flags & ZIP_FLAG_HAVE_DATA_DESC)
-                            ctx->state = unzip_state_data_descriptor;
-                        else
-                            ctx->state = unzip_state_signature;
+                        ctx->state = unzip_state_signature;
                     }
-                    break;
+                    break; /* }}} */
+                case unzip_state_unlimited_file_data: /* {{{ */
+                    if(ctx->current_field_pos == 0) {
+                        if(ctx->decompression_method->start(ctx) != NGX_OK) {
+                            ctx->discard_data = 1;
+                        }
+
+                        ctx->current_field_pos = 1;
+                    }
+        
+                    if(!ctx->discard_data) {
+                        result = ctx->decompression_method->process_chain(ctx, chain);
+
+                        buf->pos--;
+
+                        if(result == NGX_AGAIN) {
+                            return NGX_AGAIN;
+                        }
+
+                        if(result != NGX_OK) {
+                            ctx->discard_data = 1;
+
+                            ctx->decompression_method->abort(ctx);
+
+                            return NGX_UNZIP_MALFORMED;
+                        }else{
+                            if(!ctx->discard_data)
+                                ctx->decompression_method->finish(ctx);
+
+                            ctx->current_field_pos = 0;
+
+                            ctx->state = unzip_state_data_descriptor;
+                        }
+                    }
+                    break; /* }}} */
                 case unzip_state_data_descriptor:
                     if(ctx->current_field_pos == 0) {
                         ctx->current_field_len = DATA_DESCRIPTOR_LEN;
@@ -513,6 +590,11 @@ ngx_http_unzip_process_chain(ngx_unzip_ctx_t *ctx, ngx_chain_t *chain) {
                     
                     if(ctx->current_field_pos == ctx->current_field_len) {
                         ctx->current_field_pos = 0;
+
+                        ctx->crc32 = EXTRACT_LONG(ctx->current_field);
+                        ctx->compressed_size = EXTRACT_LONG(ctx->current_field + 4);
+                        ctx->uncompressed_size = EXTRACT_LONG(ctx->current_field + 8);
+
                         ctx->state = unzip_state_signature;
                     }
                     break;
@@ -746,6 +828,8 @@ ngx_http_unzip_inflate_start(ngx_unzip_ctx_t *ctx) {
         return rc;
     }
 
+    ngx_crc32_init(ctx->calculated_crc32);
+
     return NGX_OK;
 cleanup:
     inflateEnd(&ctx->stream);    
@@ -754,6 +838,8 @@ cleanup:
 
 static void /* {{{ ngx_http_unzip_inflate_finish */
 ngx_http_unzip_inflate_finish(ngx_unzip_ctx_t *ctx) {
+    ngx_crc32_final(ctx->calculated_crc32);
+
     if(ctx->next_content_filter->finish)
         ctx->next_content_filter->finish(ctx->upload_ctx);
 
@@ -797,6 +883,9 @@ ngx_http_unzip_inflate_process_chain(ngx_unzip_ctx_t *ctx, ngx_chain_t *chain) {
 
             if(rc == Z_OK || rc == Z_STREAM_END) {
                 ctx->output_buffer->last = ctx->stream.next_out;
+
+                ngx_crc32_update(&ctx->calculated_crc32, ctx->output_buffer->pos, 
+                    ctx->output_buffer->last - ctx->output_buffer->pos);
 
                 if(ctx->next_content_filter->process_chain)
                     ctx->next_content_filter->process_chain(ctx->upload_ctx, 
@@ -887,6 +976,8 @@ ngx_http_unzip_parse_file_name(ngx_unzip_ctx_t *ctx, ngx_str_t *file_name) {
 
     ngx_str_t archive_path = { file_name->len, file_name->data };
     ngx_str_t element_name = { file_name->len, file_name->data };
+    ngx_str_t exten;
+    ngx_str_t content_type;
 
     for(p = file_name->data + file_name->len - 1; p >= file_name->data ; p--, archive_path.len--) {
         if(*p == '/') {
@@ -901,6 +992,24 @@ ngx_http_unzip_parse_file_name(ngx_unzip_ctx_t *ctx, ngx_str_t *file_name) {
 
 set:
     rc = ngx_upload_set_file_name(ctx->upload_ctx, &element_name);
+
+    if(rc != NGX_OK) {
+        return rc;
+    }
+
+    rc = ngx_upload_set_exten(ctx->upload_ctx, &element_name, &exten);
+
+    if(rc != NGX_OK) {
+        return rc;
+    }
+
+    rc = ngx_upload_resolve_content_type(ctx->upload_ctx, &exten, &content_type);
+
+    if(rc != NGX_OK) {
+        return rc;
+    }
+
+    rc = ngx_upload_set_content_type(ctx->upload_ctx, &content_type);
 
     if(rc != NGX_OK) {
         return rc;

@@ -96,6 +96,18 @@ typedef struct {
 } ngx_upload_content_type_map_t;
 
 /*
+ * Upload cleanup record
+ */
+typedef struct ngx_http_upload_cleanup_s {
+    ngx_fd_t                         fd;
+    u_char                           *filename;
+    ngx_http_headers_out_t           *headers_out;
+    ngx_array_t                      *cleanup_statuses;
+    ngx_log_t                        *log;
+    unsigned int                     aborted:1;
+} ngx_upload_cleanup_t;
+
+/*
  * Upload configuration for specific location
  */
 typedef struct ngx_http_upload_loc_conf_s {
@@ -109,12 +121,14 @@ typedef struct ngx_http_upload_loc_conf_s {
     ngx_array_t       *field_templates;
     ngx_array_t       *aggregate_field_templates;
     ngx_array_t       *field_filters;
+    ngx_array_t       *cleanup_statuses;
 
     ngx_array_t       *content_filters;
     ngx_array_t       *content_type_map;
 
     unsigned int      md5:1;
     unsigned int      sha1:1;
+    unsigned int      crc32:1;
 } ngx_http_upload_loc_conf_t;
 
 typedef struct ngx_http_upload_md5_ctx_s {
@@ -166,6 +180,7 @@ typedef struct ngx_http_upload_ctx_s {
 
     ngx_http_upload_md5_ctx_t   *md5_ctx;    
     ngx_http_upload_sha1_ctx_t  *sha1_ctx;    
+    uint32_t                    crc32;    
 
     ngx_array_t         *current_content_filter_chain;    
     ngx_uint_t          current_content_filter_idx;
@@ -173,10 +188,13 @@ typedef struct ngx_http_upload_ctx_s {
     unsigned int        first_part:1;
     unsigned int        discard_data:1;
     unsigned int        is_file:1;
+    unsigned int        calculate_crc32:1;
 } ngx_http_upload_ctx_t;
 
 ngx_module_t  ngx_http_upload_module;
 
+ngx_int_t ngx_upload_set_exten(ngx_http_upload_ctx_t *u, ngx_str_t *file_name, ngx_str_t *exten);
+ngx_int_t ngx_upload_resolve_content_type(ngx_http_upload_ctx_t *u, ngx_str_t *exten, ngx_str_t *content_type);
 ngx_int_t ngx_upload_set_file_name(ngx_http_upload_ctx_t *ctx, ngx_str_t *file_name);
 ngx_int_t ngx_upload_set_content_type(ngx_http_upload_ctx_t *ctx, ngx_str_t *content_type);
 ngx_int_t ngx_upload_set_archive_path(ngx_http_upload_ctx_t *ctx, ngx_str_t *archive_path);
