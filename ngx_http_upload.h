@@ -85,6 +85,8 @@ typedef struct {
 	ngx_int_t (*process_chain)(struct ngx_http_upload_ctx_s *upload_ctx, ngx_chain_t *chain);
 } ngx_upload_content_filter_t;
 
+typedef ngx_upload_content_filter_t ngx_upload_field_filter_t;
+
 /*
  * Mapping of a content type to slave location config
  */
@@ -198,6 +200,9 @@ ngx_int_t ngx_upload_resolve_content_type(ngx_http_upload_ctx_t *u, ngx_str_t *e
 ngx_int_t ngx_upload_set_file_name(ngx_http_upload_ctx_t *ctx, ngx_str_t *file_name);
 ngx_int_t ngx_upload_set_content_type(ngx_http_upload_ctx_t *ctx, ngx_str_t *content_type);
 ngx_int_t ngx_upload_set_archive_path(ngx_http_upload_ctx_t *ctx, ngx_str_t *archive_path);
+
+ngx_upload_field_filter_t*
+ngx_upload_get_next_field_filter(ngx_http_upload_ctx_t *ctx);
 
 ngx_upload_content_filter_t*
 ngx_upload_get_next_content_filter(ngx_http_upload_ctx_t *ctx);
