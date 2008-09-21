@@ -128,6 +128,9 @@ typedef struct ngx_http_upload_loc_conf_s {
     ngx_array_t       *content_filters;
     ngx_array_t       *content_type_map;
 
+    ngx_str_t         archive_elm_separator;
+    ngx_str_t         archive_path_separator;
+
     unsigned int      md5:1;
     unsigned int      sha1:1;
     unsigned int      crc32:1;
@@ -160,6 +163,7 @@ typedef struct ngx_http_upload_ctx_s {
     ngx_str_t           field_name;
     ngx_str_t           file_name;
     ngx_str_t           content_type;
+    ngx_str_t           archive_elm;
     ngx_str_t           archive_path;
 
     ngx_buf_t           *output_buffer;
@@ -197,9 +201,54 @@ ngx_module_t  ngx_http_upload_module;
 
 ngx_int_t ngx_upload_set_exten(ngx_http_upload_ctx_t *u, ngx_str_t *file_name, ngx_str_t *exten);
 ngx_int_t ngx_upload_resolve_content_type(ngx_http_upload_ctx_t *u, ngx_str_t *exten, ngx_str_t *content_type);
-ngx_int_t ngx_upload_set_file_name(ngx_http_upload_ctx_t *ctx, ngx_str_t *file_name);
-ngx_int_t ngx_upload_set_content_type(ngx_http_upload_ctx_t *ctx, ngx_str_t *content_type);
-ngx_int_t ngx_upload_set_archive_path(ngx_http_upload_ctx_t *ctx, ngx_str_t *archive_path);
+
+#define ngx_upload_set_file_name(ctx, fn) \
+    do{ \
+        (ctx)->file_name.data = (fn)->data; \
+        (ctx)->file_name.len = (fn)->len; \
+    }while(0); \
+
+#define ngx_upload_get_file_name(ctx, fn) \
+    do{ \
+        (fn)->data = (ctx)->file_name.data; \
+        (fn)->len = (ctx)->file_name.len; \
+    }while(0); \
+
+#define ngx_upload_set_content_type(ctx, ct) \
+    do{ \
+        (ctx)->content_type.data = (ct)->data; \
+        (ctx)->content_type.len = (ct)->len; \
+    }while(0); \
+
+#define ngx_upload_get_content_type(ctx, ct) \
+    do{ \
+        (ct)->data = (ctx)->content_type.data; \
+        (ct)->len = (ctx)->content_type.len; \
+    }while(0); \
+
+#define ngx_upload_set_archive_elm(ctx, ae) \
+    do{ \
+        (ctx)->archive_elm.data = (ae)->data; \
+        (ctx)->archive_elm.len = (ae)->len; \
+    }while(0); \
+
+#define ngx_upload_get_archive_elm(ctx, ae) \
+    do{ \
+        (ae)->data = (ctx)->archive_elm.data; \
+        (ae)->len = (ctx)->archive_elm.len; \
+    }while(0); \
+
+#define ngx_upload_set_archive_path(ctx, ap) \
+    do{ \
+        (ctx)->archive_path.data = (ap)->data; \
+        (ctx)->archive_path.len = (ap)->len; \
+    }while(0); \
+
+#define ngx_upload_get_archive_path(ctx, ap) \
+    do{ \
+        (ap)->data = (ctx)->archive_path.data; \
+        (ap)->len = (ctx)->archive_path.len; \
+    }while(0); \
 
 ngx_upload_field_filter_t*
 ngx_upload_get_next_field_filter(ngx_http_upload_ctx_t *ctx);
