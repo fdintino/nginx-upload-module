@@ -207,8 +207,8 @@ ngx_http_unzip_chain_copy_range(ngx_chain_t *chain, ngx_chain_t **copy, off_t *l
 void ngx_http_unzip_reclaim_chain(ngx_chain_t *cl, ngx_chain_t **free);
 void ngx_http_unzip_chain_advance(ngx_chain_t *chain, ngx_chain_t *copy);
 
-static char * ngx_http_unzip_command(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
-static void *ngx_http_unzip_create_loc_conf(ngx_conf_t *cf);
+static char * ngx_upload_unzip_command(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static void *ngx_upload_unzip_create_loc_conf(ngx_conf_t *cf);
 
 static ngx_int_t ngx_http_unzip_start_handler(ngx_http_upload_ctx_t *u);
 static void ngx_http_unzip_finish_handler(ngx_http_upload_ctx_t *u);
@@ -260,14 +260,14 @@ ngx_http_unzip_content_filter = {
 
 static ngx_conf_post_handler_pt  ngx_http_unzip_window_p = ngx_http_unzip_window;
 
-static ngx_command_t  ngx_http_unzip_filter_commands[] = { /* {{{ */
+static ngx_command_t  ngx_upload_unzip_filter_commands[] = { /* {{{ */
 
     /*
      * Enables unzipping of uploaded file
      */
     { ngx_string("upload_unzip"),
       NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-      ngx_http_unzip_command,
+      ngx_upload_unzip_command,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL },
@@ -327,7 +327,7 @@ static ngx_command_t  ngx_http_unzip_filter_commands[] = { /* {{{ */
       ngx_null_command
 }; /* }}} */
 
-ngx_http_module_t  ngx_http_unzip_filter_module_ctx = { /* {{{ */
+ngx_http_module_t  ngx_upload_unzip_filter_module_ctx = { /* {{{ */
     NULL,                                  /* preconfiguration */
     NULL,                                  /* postconfiguration */
 
@@ -337,14 +337,14 @@ ngx_http_module_t  ngx_http_unzip_filter_module_ctx = { /* {{{ */
     NULL,                                  /* create server configuration */
     NULL,                                  /* merge server configuration */
 
-    ngx_http_unzip_create_loc_conf,        /* create location configuration */
+    ngx_upload_unzip_create_loc_conf,      /* create location configuration */
     NULL                                   /* merge location configuration */
 }; /* }}} */
 
-ngx_module_t  ngx_http_unzip_filter_module = { /* {{{ */
+ngx_module_t  ngx_upload_unzip_filter_module = { /* {{{ */
     NGX_MODULE_V1,
-    &ngx_http_unzip_filter_module_ctx,     /* module context */
-    ngx_http_unzip_filter_commands,        /* module directives */
+    &ngx_upload_unzip_filter_module_ctx,   /* module context */
+    ngx_upload_unzip_filter_commands,      /* module directives */
     NGX_HTTP_MODULE,                       /* module type */
     NULL,                                  /* init master */
     NULL,                                  /* init module */
@@ -356,8 +356,8 @@ ngx_module_t  ngx_http_unzip_filter_module = { /* {{{ */
     NGX_MODULE_V1_PADDING
 }; /* }}} */
 
-static char * /* {{{ ngx_http_unzip_command */
-ngx_http_unzip_command(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+static char * /* {{{ ngx_upload_unzip_command */
+ngx_upload_unzip_command(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_unzip_conf_t           *uzcf = conf;
     ngx_http_upload_loc_conf_t *ulcf;
@@ -387,7 +387,7 @@ ngx_http_unzip_process_chain(ngx_unzip_ctx_t *ctx, ngx_chain_t *chain) {
     ngx_buf_t *buf;
     ngx_unzip_conf_t *uzcf;
 
-    uzcf = ngx_http_get_module_loc_conf(ctx->upload_ctx->request, ngx_http_unzip_filter_module); 
+    uzcf = ngx_http_get_module_loc_conf(ctx->upload_ctx->request, ngx_upload_unzip_filter_module); 
 
     while(chain != NULL) {
         for(buf = chain->buf ; buf->pos != buf->last ; buf->pos++) {
@@ -859,10 +859,10 @@ ngx_http_unzip_start_handler(ngx_http_upload_ctx_t *u) {
     ngx_unzip_ctx_t            *ctx, *parent;
     ngx_http_upload_loc_conf_t *ulcf;
 
-    uzcf = ngx_http_get_module_loc_conf(u->request, ngx_http_unzip_filter_module);
+    uzcf = ngx_http_get_module_loc_conf(u->request, ngx_upload_unzip_filter_module);
     ulcf = ngx_http_get_module_loc_conf(u->request, ngx_http_upload_module);
 
-    ctx = ngx_http_get_module_ctx(u->request, ngx_http_unzip_filter_module);
+    ctx = ngx_http_get_module_ctx(u->request, ngx_upload_unzip_filter_module);
 
     parent = ctx;
 
@@ -878,7 +878,7 @@ ngx_http_unzip_start_handler(ngx_http_upload_ctx_t *u) {
 
     ctx->parent = parent;
 
-    ngx_http_set_ctx(u->request, ctx, ngx_http_unzip_filter_module);
+    ngx_http_set_ctx(u->request, ctx, ngx_upload_unzip_filter_module);
 
     ctx->state = unzip_state_signature;
     ctx->upload_ctx = u;
@@ -910,7 +910,7 @@ static void /* {{{ ngx_http_unzip_finish_handler */
 ngx_http_unzip_finish_handler(ngx_http_upload_ctx_t *u) {
     ngx_unzip_ctx_t            *ctx;
 
-    ctx = ngx_http_get_module_ctx(u->request, ngx_http_unzip_filter_module);
+    ctx = ngx_http_get_module_ctx(u->request, ngx_upload_unzip_filter_module);
 
     if (ctx->state == unzip_state_file_data) {
         if(!ctx->discard_data)
@@ -921,14 +921,14 @@ ngx_http_unzip_finish_handler(ngx_http_upload_ctx_t *u) {
 
     ngx_upload_set_archive_path(u, &ctx->prev_archive_path);
 
-    ngx_http_set_ctx(u->request, ctx->parent, ngx_http_unzip_filter_module);
+    ngx_http_set_ctx(u->request, ctx->parent, ngx_upload_unzip_filter_module);
 } /* }}} */
 
 static void /* {{{ ngx_http_unzip_abort_handler */
 ngx_http_unzip_abort_handler(ngx_http_upload_ctx_t *u) {
     ngx_unzip_ctx_t            *ctx;
 
-    ctx = ngx_http_get_module_ctx(u->request, ngx_http_unzip_filter_module);
+    ctx = ngx_http_get_module_ctx(u->request, ngx_upload_unzip_filter_module);
 
     if (ctx->state == unzip_state_file_data) {
         if(!ctx->discard_data)
@@ -939,20 +939,20 @@ ngx_http_unzip_abort_handler(ngx_http_upload_ctx_t *u) {
 
     ngx_upload_set_archive_path(u, &ctx->prev_archive_path);
 
-    ngx_http_set_ctx(u->request, ctx->parent, ngx_http_unzip_filter_module);
+    ngx_http_set_ctx(u->request, ctx->parent, ngx_upload_unzip_filter_module);
 } /* }}} */
 
 static ngx_int_t /* {{{ ngx_http_unzip_data_handler */
 ngx_http_unzip_data_handler(ngx_http_upload_ctx_t *u, ngx_chain_t *chain) {
     ngx_unzip_ctx_t            *ctx;
 
-    ctx = ngx_http_get_module_ctx(u->request, ngx_http_unzip_filter_module);
+    ctx = ngx_http_get_module_ctx(u->request, ngx_upload_unzip_filter_module);
 
     return ngx_http_unzip_process_chain(ctx, chain);
 } /* }}} */
 
-static void * /* {{{ ngx_http_unzip_create_loc_conf */
-ngx_http_unzip_create_loc_conf(ngx_conf_t *cf)
+static void * /* {{{ ngx_upload_unzip_create_loc_conf */
+ngx_upload_unzip_create_loc_conf(ngx_conf_t *cf)
 {
     ngx_unzip_conf_t  *conf;
 
@@ -1028,7 +1028,7 @@ ngx_http_unzip_inflate_start(ngx_unzip_ctx_t *ctx) {
     ctx->stream.avail_in = 0;
     ctx->stream.next_in = Z_NULL;
 
-    uzcf = ngx_http_get_module_loc_conf(ctx->upload_ctx->request, ngx_http_unzip_filter_module); 
+    uzcf = ngx_http_get_module_loc_conf(ctx->upload_ctx->request, ngx_upload_unzip_filter_module); 
 
     if(ctx->output_buffer == NULL) {
         ctx->output_buffer = ngx_create_temp_buf(ctx->pool, uzcf->bufs.size);
