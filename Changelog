@@ -1,4 +1,7 @@
 
+Version 2.0.7
+ * Change: file size and output body size restrictions
+
 Version 2.0.6
  * Fixed bug: zero variables in aggregate field name caused allocation
    of random amount of memory. Thanks to Dmitry Dedukhin.
