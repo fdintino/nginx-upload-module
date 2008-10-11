@@ -263,6 +263,26 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
       0,
       NULL},
 
+    /*
+     * Specifies a separator for archive element tokens
+     */
+    { ngx_string("upload_archive_elm_separator"),
+      NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_str_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_upload_loc_conf_t, archive_elm_separator),
+      NULL},
+
+    /*
+     * Specifies a separator for archive path tokens
+     */
+    { ngx_string("upload_archive_path_separator"),
+      NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_str_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_upload_loc_conf_t, archive_path_separator),
+      NULL},
+
       ngx_null_command
 }; /* }}} */
 
@@ -311,6 +331,10 @@ static ngx_http_variable_t  ngx_http_upload_variables[] = { /* {{{ */
 
     { ngx_string("upload_tmp_path"), NULL, ngx_http_upload_variable,
       (uintptr_t) offsetof(ngx_http_upload_ctx_t, output_file.name),
+      NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH, 0 },
+
+    { ngx_string("upload_archive_elm"), NULL, ngx_http_upload_variable,
+      (uintptr_t) offsetof(ngx_http_upload_ctx_t, archive_elm),
       NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH, 0 },
 
     { ngx_string("upload_archive_path"), NULL, ngx_http_upload_variable,
@@ -798,6 +822,7 @@ ngx_http_upload_append_str(ngx_http_upload_ctx_t *u, ngx_buf_t *b, ngx_chain_t *
     b->temporary = 1;
     b->in_file = 0;
     b->last_buf = 0;
+    b->flush = 0;
 
     b->last_in_chain = 0;
     b->last_buf = 0;
@@ -922,35 +947,38 @@ static void ngx_http_upload_field_abort(ngx_http_upload_ctx_t *u) { /* {{{ */
     }
 } /* }}} */
 
-static ngx_int_t ngx_http_upload_field_process_chain(ngx_http_upload_ctx_t *u, ngx_chain_t *chain) { /* {{{ */
+static ngx_int_t /* {{{ ngx_http_upload_field_process_chain */
+ngx_http_upload_field_process_chain(ngx_http_upload_ctx_t *u, ngx_chain_t *chain) {
     ngx_buf_t                      *b;
     ngx_chain_t                    *cl;
 
-    for(cl = chain; cl && !cl->buf->last_in_chain; cl = cl->next) {
-        b = ngx_create_temp_buf(u->request->pool, cl->buf->last - cl->buf->pos);
+    for(;chain && !chain->buf->last_in_chain; chain = chain->next) {
+        if(chain->buf->last - chain->buf->pos > 0) {
+            b = ngx_create_temp_buf(u->request->pool, chain->buf->last - chain->buf->pos);
 
-        if (b == NULL) {
-            return NGX_ERROR;
-        }
+            if (b == NULL) {
+                return NGX_ERROR;
+            }
 
-        cl = ngx_alloc_chain_link(u->request->pool);
-        if (cl == NULL) {
-            return NGX_ERROR;
-        }
+            cl = ngx_alloc_chain_link(u->request->pool);
+            if (cl == NULL) {
+                return NGX_ERROR;
+            }
 
-        b->last_in_chain = 0;
+            b->last_in_chain = 0;
 
-        cl->buf = b;
-        cl->next = NULL;
+            cl->buf = b;
+            cl->next = NULL;
 
-        b->last = ngx_cpymem(b->last, cl->buf->pos, cl->buf->last - cl->buf->pos);
+            b->last = ngx_cpymem(b->last, chain->buf->pos, chain->buf->last - chain->buf->pos);
 
-        if(u->chain == NULL) {
-            u->chain = cl;
-            u->last = cl;
-        }else{
-            u->last->next = cl;
-            u->last = cl;
+            if(u->chain == NULL) {
+                u->chain = cl;
+                u->last = cl;
+            }else{
+                u->last->next = cl;
+                u->last = cl;
+            }
         }
     }
 
@@ -973,6 +1001,7 @@ ngx_http_upload_create_loc_conf(ngx_conf_t *cf)
     conf->max_header_len = NGX_CONF_UNSET_SIZE;
 
     /*
+     * conf->archive_elm_separator
      * conf->field_templates,
      * conf->aggregate_field_templates,
      * and conf->field_filters are
@@ -1033,6 +1062,9 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     if(conf->cleanup_statuses == NULL) {
         conf->cleanup_statuses = prev->cleanup_statuses;
     }
+
+    ngx_conf_merge_str_value(conf->archive_elm_separator, prev->archive_elm_separator, "_");
+    ngx_conf_merge_str_value(conf->archive_path_separator, prev->archive_path_separator, "!");
 
     return NGX_CONF_OK;
 } /* }}} */
@@ -1546,9 +1578,7 @@ ngx_http_upload_filter_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
 
     for (i = 0; ngx_modules[i]; i++) {
-        if (ngx_modules[i]->type != NGX_HTTP_MODULE &&
-            ngx_modules[i] != &ngx_http_upload_module &&
-            ngx_modules[i] != &ngx_http_core_module) {
+        if (ngx_modules[i]->type != NGX_HTTP_MODULE) {
             continue;
         }
 
@@ -2155,36 +2185,6 @@ ngx_upload_resolve_content_type(ngx_http_upload_ctx_t *u, ngx_str_t *exten, ngx_
     return NGX_OK;
 } /* }}} */
 
-ngx_int_t /* {{{ ngx_upload_set_file_name */
-ngx_upload_set_file_name(ngx_http_upload_ctx_t *ctx,
-    ngx_str_t *file_name)
-{
-    ctx->file_name.data = file_name->data;
-    ctx->file_name.len = file_name->len;
-
-    return NGX_OK;
-} /* }}} */
-
-ngx_int_t /* {{{ ngx_upload_set_content_type */
-ngx_upload_set_content_type(ngx_http_upload_ctx_t *ctx,
-    ngx_str_t *content_type)
-{
-    ctx->content_type.data = content_type->data;
-    ctx->content_type.len = content_type->len;
-
-    return NGX_OK;
-} /* }}} */
-
-ngx_int_t /* {{{ ngx_upload_set_archive_path */
-ngx_upload_set_archive_path(ngx_http_upload_ctx_t *ctx,
-    ngx_str_t *archive_path)
-{
-    ctx->archive_path.data = archive_path->data;
-    ctx->archive_path.len = archive_path->len;
-
-    return NGX_OK;
-} /* }}} */
-
 static ngx_int_t /* {{{ ngx_upload_set_content_filter */
 ngx_upload_set_content_filter(ngx_http_upload_ctx_t *u, ngx_str_t *content_type)
 {
@@ -2277,13 +2277,16 @@ static void upload_abort_file(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
 
 static void upload_flush_output_buffer(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
     ngx_chain_t chain = { upload_ctx->output_buffer, NULL };
+    ngx_int_t rc;
 
     if(upload_ctx->output_buffer->pos > upload_ctx->output_buffer->start) {
         if(upload_ctx->process_chain_f) {
             upload_ctx->output_buffer->last = upload_ctx->output_buffer->pos;
             upload_ctx->output_buffer->pos = upload_ctx->output_buffer->start;
 
-            if(upload_ctx->process_chain_f(upload_ctx, &chain) != NGX_OK) {
+            rc = upload_ctx->process_chain_f(upload_ctx, &chain);
+
+            if(rc != NGX_OK && rc != NGX_AGAIN) {
                 upload_ctx->discard_data = 1;
             }
         }
