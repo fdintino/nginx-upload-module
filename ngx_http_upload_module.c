@@ -38,6 +38,7 @@
 #define NGX_UPLOAD_NOMEM        -2
 #define NGX_UPLOAD_IOERROR      -3
 #define NGX_UPLOAD_SCRIPTERROR  -4
+#define NGX_UPLOAD_TOOLARGE     -5
 
 /*
  * State of multipart/form-data parser
@@ -94,6 +95,8 @@ typedef struct {
     ngx_uint_t        store_access;
     size_t            buffer_size;
     size_t            max_header_len;
+    size_t            max_output_body_len;
+    off_t             max_file_size;
     ngx_array_t       *field_templates;
     ngx_array_t       *aggregate_field_templates;
     ngx_array_t       *field_filters;
@@ -338,6 +341,26 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
       NULL },
 
     /*
+     * Specifies the maximal size of the file to be uploaded
+     */
+    { ngx_string("upload_max_file_size"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_off_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_upload_loc_conf_t, max_file_size),
+      NULL },
+
+    /*
+     * Specifies the maximal length of output body
+     */
+    { ngx_string("upload_max_output_body_len"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_size_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_upload_loc_conf_t, max_output_body_len),
+      NULL },
+
+    /*
      * Specifies the field to set in altered response body
      */
     { ngx_string("upload_set_form_field"),
@@ -564,7 +587,10 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
     ngx_buf_t                      *b;
     ngx_chain_t                    *cl;
 
-    ctx->output_body_len += ctx->boundary.len + 4;
+    if(ulcf->max_output_body_len != 0) {
+        if(ctx->output_body_len + ctx->boundary.len + 4 > ulcf->max_output_body_len)
+            return NGX_HTTP_REQUEST_ENTITY_TOO_LARGE;
+    }
 
     /*
      * Append final boundary
@@ -572,13 +598,11 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
     b = ngx_create_temp_buf(r->pool, ctx->boundary.len + 4);
 
     if (b == NULL) {
-        ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
     cl = ngx_alloc_chain_link(r->pool);
     if (cl == NULL) {
-        ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -610,7 +634,6 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
     flags = 0;
 
     if (ngx_http_parse_unsafe_uri(r, uri, &args, &flags) != NGX_OK) {
-        ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -625,7 +648,6 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
     r->headers_in.content_length->value.data = ngx_palloc(r->pool, NGX_OFF_T_LEN);
 
     if (r->headers_in.content_length->value.data == NULL) {
-        ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -636,7 +658,6 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
     rc = ngx_http_internal_redirect(r, uri, &args);
 
     if (rc == NGX_ERROR) {
-        ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -925,6 +946,7 @@ static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u, u
     ngx_http_request_t             *r = u->request;
     ngx_buf_t                      *b;
     ngx_chain_t                    *cl;
+    ngx_http_upload_loc_conf_t     *ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
 
     if(u->is_file) {
         if(u->md5_ctx)
@@ -936,6 +958,11 @@ static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u, u
         if(u->calculate_crc32)
             ngx_crc32_update(&u->crc32, buf, len);
 
+        if(ulcf->max_file_size != 0) {
+            if(u->output_file.offset + len > ulcf->max_file_size)
+                return NGX_UPLOAD_TOOLARGE;
+        }
+
         if(ngx_write_file(&u->output_file, buf, len, u->output_file.offset) == NGX_ERROR) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
                            "write to file \"%V\" failed", &u->output_file.name);
@@ -943,6 +970,13 @@ static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u, u
         }else
             return NGX_OK;
     }else{
+        if(ulcf->max_output_body_len != 0) {
+            if (u->output_body_len + len > ulcf->max_output_body_len)
+                return NGX_UPLOAD_TOOLARGE;
+        }
+
+        u->output_body_len += len;
+
         b = ngx_create_temp_buf(u->request->pool, len);
 
         if (b == NULL) {
@@ -1003,6 +1037,7 @@ ngx_http_upload_append_str(ngx_http_upload_ctx_t *u, ngx_buf_t *b, ngx_chain_t *
 static ngx_int_t /* {{{ ngx_http_upload_append_field */
 ngx_http_upload_append_field(ngx_http_upload_ctx_t *u, ngx_str_t *name, ngx_str_t *value)
 {
+    ngx_http_upload_loc_conf_t     *ulcf = ngx_http_get_module_loc_conf(u->request, ngx_http_upload_module);
     ngx_str_t   boundary = { u->first_part ? u->boundary.len - 2 : u->boundary.len,
          u->first_part ? u->boundary.data + 2 : u->boundary.data };
 
@@ -1010,6 +1045,12 @@ ngx_http_upload_append_field(ngx_http_upload_ctx_t *u, ngx_str_t *name, ngx_str_
     ngx_chain_t *cl;
 
     if(name->len > 0) {
+        if(ulcf->max_output_body_len != 0) {
+            if(u->output_body_len + boundary.len + ngx_upload_field_part1.len + name->len
+               + ngx_upload_field_part2.len + value->len > ulcf->max_output_body_len)
+                return NGX_UPLOAD_TOOLARGE;
+        }
+
         b = ngx_palloc(u->request->pool, value->len > 0 ?
             5 * sizeof(ngx_buf_t) : 4 * sizeof(ngx_buf_t));
 
@@ -1035,6 +1076,9 @@ ngx_http_upload_append_field(ngx_http_upload_ctx_t *u, ngx_str_t *name, ngx_str_
         if(value->len > 0)
             ngx_http_upload_append_str(u, b + 4, cl + 4, value);
 
+        u->output_body_len += boundary.len + ngx_upload_field_part1.len + name->len
+            + ngx_upload_field_part2.len + value->len;
+
         u->first_part = 0;
     }
 
@@ -1055,6 +1099,8 @@ ngx_http_upload_create_loc_conf(ngx_conf_t *cf)
 
     conf->buffer_size = NGX_CONF_UNSET_SIZE;
     conf->max_header_len = NGX_CONF_UNSET_SIZE;
+    conf->max_output_body_len = NGX_CONF_UNSET_SIZE;
+    conf->max_file_size = NGX_CONF_UNSET;
 
     /*
      * conf->field_templates,
@@ -1089,6 +1135,14 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_size_value(conf->max_header_len,
                               prev->max_header_len,
                               (size_t) 512);
+
+    ngx_conf_merge_size_value(conf->max_output_body_len,
+                              prev->max_output_body_len,
+                              (size_t) 100 * 1024);
+
+    ngx_conf_merge_off_value(conf->max_file_size,
+                             prev->max_file_size,
+                             0);
 
     if(conf->field_templates == NULL) {
         conf->field_templates = prev->field_templates;
@@ -1777,6 +1831,8 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
                         break;
                     case NGX_UPLOAD_MALFORMED:
                         return NGX_HTTP_BAD_REQUEST;
+                    case NGX_UPLOAD_TOOLARGE:
+                        return NGX_HTTP_REQUEST_ENTITY_TOO_LARGE;
                     case NGX_UPLOAD_IOERROR:
                         return NGX_HTTP_SERVICE_UNAVAILABLE;
                     case NGX_UPLOAD_NOMEM: case NGX_UPLOAD_SCRIPTERROR:
@@ -1856,6 +1912,8 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
             break;
         case NGX_UPLOAD_MALFORMED:
             return NGX_HTTP_BAD_REQUEST;
+        case NGX_UPLOAD_TOOLARGE:
+            return NGX_HTTP_REQUEST_ENTITY_TOO_LARGE;
         case NGX_UPLOAD_IOERROR:
             return NGX_HTTP_SERVICE_UNAVAILABLE;
         case NGX_UPLOAD_NOMEM: case NGX_UPLOAD_SCRIPTERROR:
