@@ -1,5 +1,6 @@
 USE_MD5=YES
 USE_SHA1=YES
+USE_ZLIB=YES
 ngx_addon_name=ngx_http_upload_module
 HTTP_MODULES="$HTTP_MODULES ngx_http_upload_module ngx_upload_unzip_filter_module ngx_upload_discard_filter_module"
 NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/ngx_http_upload_module.c $ngx_addon_dir/ngx_upload_unzip_filter_module.c $ngx_addon_dir/ngx_upload_discard_filter_module.c"
