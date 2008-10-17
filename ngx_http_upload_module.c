@@ -101,6 +101,7 @@ typedef struct {
     ngx_array_t       *aggregate_field_templates;
     ngx_array_t       *field_filters;
     ngx_array_t       *cleanup_statuses;
+    ngx_flag_t         forward_args;
 
     unsigned int      md5:1;
     unsigned int      sha1:1;
@@ -405,6 +406,18 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL},
+     
+     /*
+      * Specifies the whether or not to forward query args
+      * to the upload_pass redirect location
+      */
+     { ngx_string("upload_forward_args"),
+       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF
+                         |NGX_CONF_FLAG,
+       ngx_conf_set_flag_slot,
+       NGX_HTTP_LOC_CONF_OFFSET,
+       offsetof(ngx_http_upload_loc_conf_t, forward_args),
+       NULL },
 
       ngx_null_command
 }; /* }}} */
@@ -629,8 +642,14 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
 
     uri = &ulcf->url;
 
-    args.len = 0;
-    args.data = NULL;
+    if (ulcf->forward_args) {
+      args = r->args; /* forward the query args */
+    }
+    else {
+      args.len = 0;
+      args.data = NULL;
+    }
+
     flags = 0;
 
     if (ngx_http_parse_unsafe_uri(r, uri, &args, &flags) != NGX_OK) {
@@ -1096,6 +1115,7 @@ ngx_http_upload_create_loc_conf(ngx_conf_t *cf)
     }
 
     conf->store_access = NGX_CONF_UNSET_UINT;
+    conf->forward_args = NGX_CONF_UNSET;
 
     conf->buffer_size = NGX_CONF_UNSET_SIZE;
     conf->max_header_len = NGX_CONF_UNSET_SIZE;
@@ -1143,6 +1163,11 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_off_value(conf->max_file_size,
                              prev->max_file_size,
                              0);
+
+    if(conf->forward_args == NGX_CONF_UNSET) {
+        conf->forward_args = prev->forward_args != NGX_CONF_UNSET ?
+            prev->forward_args : 0;
+    }
 
     if(conf->field_templates == NULL) {
         conf->field_templates = prev->field_templates;
