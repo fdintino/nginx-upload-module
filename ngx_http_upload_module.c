@@ -1165,7 +1165,7 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
                              0);
 
     if(conf->forward_args == NGX_CONF_UNSET) {
-        conf->forward_args = prev->forward_args != NGX_CONF_UNSET ?
+        conf->forward_args = (prev->forward_args != NGX_CONF_UNSET) ?
             prev->forward_args : 0;
     }
 
