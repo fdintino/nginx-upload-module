@@ -1,6 +1,8 @@
 
 Version 2.0.7
  * Change: file size and output body size restrictions
+ * Added feature: directive upload_forward_args enables forwarding
+   of request arguments to a backend. Thanks to Todd Fisher.
 
 Version 2.0.6
  * Fixed bug: zero variables in aggregate field name caused allocation
