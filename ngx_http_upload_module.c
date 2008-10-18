@@ -411,7 +411,7 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
       * Specifies the whether or not to forward query args
       * to the upload_pass redirect location
       */
-     { ngx_string("upload_forward_args"),
+     { ngx_string("upload_pass_args"),
        NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF
                          |NGX_CONF_FLAG,
        ngx_conf_set_flag_slot,
