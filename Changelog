@@ -1,4 +1,13 @@
 
+Version 2.1.0
+ * Added feature: upload filters, unzip and discarding filter
+ * Added feature: guessing content type using file extensions
+
+Version 2.0.6
+ * Fixed bug: zero variables in aggregate field name caused allocation
+   of random amount of memory. Thanks to Dmitry Dedukhin.
+ * Fixed bug: Prevent generation of a field in case of empty field name
+
 Version 2.0.5
  * Fixed bug: prevent leaking of file descriptor on a timeout.
 
