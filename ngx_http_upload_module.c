@@ -1548,7 +1548,7 @@ ngx_http_upload_add_filter(ngx_http_upload_loc_conf_t *ulcf,
 static char * /* {{{ ngx_http_upload_filter_block */
 ngx_http_upload_filter_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
-    ngx_http_upload_loc_conf_t *ulcf, *pulcf;
+    ngx_http_upload_loc_conf_t *ulcf, *pulcf = conf;
 
     char                      *rv;
     void                      *mconf;
@@ -1557,9 +1557,7 @@ ngx_http_upload_filter_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_conf_t                 save;
     ngx_http_module_t         *module;
     ngx_http_conf_ctx_t       *ctx, *pctx;
-    ngx_http_core_loc_conf_t  *clcf, *pclcf = conf;
-
-    pulcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_upload_module);
+    ngx_http_core_loc_conf_t  *clcf, *pclcf;
 
     value = cf->args->elts;
 
@@ -1607,9 +1605,16 @@ ngx_http_upload_filter_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
     }
 
+    pclcf = pctx->loc_conf[ngx_http_core_module.ctx_index];
+
     clcf = ctx->loc_conf[ngx_http_core_module.ctx_index];
     clcf->loc_conf = ctx->loc_conf;
     clcf->name = pclcf->name;
+    clcf->noname = 1;
+
+    if (ngx_http_add_location(cf, &pclcf->locations, clcf) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
 
     save = *cf;
     cf->ctx = ctx;

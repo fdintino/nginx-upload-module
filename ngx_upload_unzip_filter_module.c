@@ -62,10 +62,9 @@ typedef struct {
 
 typedef struct {
     ngx_bufs_t           bufs;
-    ssize_t              wbits;
-    ssize_t              max_file_name_len;
-    unsigned int         recursive:1;
-} ngx_unzip_conf_t;
+    size_t               wbits, memlevel;
+    size_t               max_file_name_len;
+} ngx_unzip_loc_conf_t;
 
 typedef enum {
     unzip_state_signature,
@@ -95,10 +94,10 @@ typedef struct {
     uint16_t            last_mod_time;
     uint16_t            last_mod_date;
     uint32_t            crc32;
-    ssize_t             compressed_size;
-    ssize_t             uncompressed_size;
-    ssize_t             file_name_len;
-    ssize_t             extra_field_len;
+    size_t              compressed_size;
+    size_t              uncompressed_size;
+    size_t              file_name_len;
+    size_t              extra_field_len;
 } ngx_unzip_local_data_header_t;
 
 typedef struct {
@@ -209,6 +208,8 @@ void ngx_http_unzip_chain_advance(ngx_chain_t *chain, ngx_chain_t *copy);
 
 static char * ngx_upload_unzip_command(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static void *ngx_upload_unzip_create_loc_conf(ngx_conf_t *cf);
+static char *ngx_upload_unzip_merge_loc_conf(ngx_conf_t *cf,
+    void *parent, void *child);
 
 static ngx_int_t ngx_http_unzip_start_handler(ngx_http_upload_ctx_t *u);
 static void ngx_http_unzip_finish_handler(ngx_http_upload_ctx_t *u);
@@ -227,6 +228,7 @@ static void ngx_http_unzip_inflate_abort(ngx_unzip_ctx_t *ctx);
 static ngx_int_t ngx_http_unzip_inflate_process_chain(ngx_unzip_ctx_t *ctx, ngx_chain_t *chain);
 
 static char *ngx_http_unzip_window(ngx_conf_t *cf, void *post, void *data);
+static char *ngx_http_unzip_hash(ngx_conf_t *cf, void *post, void *data);
 
 static ngx_int_t
 ngx_http_unzip_set_decompression_method(ngx_unzip_ctx_t *ctx, uint16_t compression_method_number);
@@ -259,6 +261,7 @@ ngx_http_unzip_content_filter = {
 } /* }}} */;
 
 static ngx_conf_post_handler_pt  ngx_http_unzip_window_p = ngx_http_unzip_window;
+static ngx_conf_post_handler_pt  ngx_http_unzip_hash_p = ngx_http_unzip_hash;
 
 static ngx_command_t  ngx_upload_unzip_filter_commands[] = { /* {{{ */
 
@@ -266,7 +269,7 @@ static ngx_command_t  ngx_upload_unzip_filter_commands[] = { /* {{{ */
      * Enables unzipping of uploaded file
      */
     { ngx_string("upload_unzip"),
-      NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS|NGX_CONF_TAKE1,
       ngx_upload_unzip_command,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
@@ -276,52 +279,37 @@ static ngx_command_t  ngx_upload_unzip_filter_commands[] = { /* {{{ */
      * Specifies size and number of buffers to use for decompressing
      */
     { ngx_string("upload_unzip_buffers"),
-      NGX_HTTP_LOC_CONF|NGX_CONF_TAKE2,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE2,
       ngx_conf_set_bufs_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof(ngx_unzip_conf_t, bufs),
+      offsetof(ngx_unzip_loc_conf_t, bufs),
       NULL },
 
     /*
-     * Specifies size window to use for decompressing
+     * Specifies window size to use for decompressing
      */
     { ngx_string("upload_unzip_window"),
-      NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof(ngx_unzip_conf_t, wbits),
+      offsetof(ngx_unzip_loc_conf_t, wbits),
       &ngx_http_unzip_window_p },
 
-    /*
-     * Specifies a form field with a special content to generate
-     * in output form
-     */
-    { ngx_string("upload_unzip_set_form_field"),
-      NGX_HTTP_LOC_CONF|NGX_CONF_TAKE2,
+    { ngx_string("upload_unzip_hash"), 
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
-      NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof(ngx_unzip_conf_t, wbits),
-      NULL },
+      NGX_HTTP_LOC_CONF_OFFSET,  
+      offsetof(ngx_unzip_loc_conf_t, memlevel),
+      &ngx_http_unzip_hash_p },
 
     /*
-     * Specifies a form field with a special aggregate content to generate
-     * in output form
-     */
-    { ngx_string("upload_unzip_aggregate_form_field"),
-      NGX_HTTP_LOC_CONF|NGX_CONF_TAKE2,
-      ngx_conf_set_size_slot,
-      NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof(ngx_unzip_conf_t, wbits),
-      NULL },
-
-    /*
-     * Specifies the maximal length of a file name in archive
+     * Specifies maximal allowed length of file in ZIP archive
      */
     { ngx_string("upload_unzip_max_file_name_len"),
-      NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof(ngx_unzip_conf_t, max_file_name_len),
+      offsetof(ngx_unzip_loc_conf_t, max_file_name_len),
       NULL },
 
       ngx_null_command
@@ -338,7 +326,7 @@ ngx_http_module_t  ngx_upload_unzip_filter_module_ctx = { /* {{{ */
     NULL,                                  /* merge server configuration */
 
     ngx_upload_unzip_create_loc_conf,      /* create location configuration */
-    NULL                                   /* merge location configuration */
+    ngx_upload_unzip_merge_loc_conf        /* merge location configuration */
 }; /* }}} */
 
 ngx_module_t  ngx_upload_unzip_filter_module = { /* {{{ */
@@ -359,20 +347,9 @@ ngx_module_t  ngx_upload_unzip_filter_module = { /* {{{ */
 static char * /* {{{ ngx_upload_unzip_command */
 ngx_upload_unzip_command(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
-    ngx_unzip_conf_t           *uzcf = conf;
     ngx_http_upload_loc_conf_t *ulcf;
 
-    ngx_str_t                   *value;
-
     ulcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_upload_module);
-
-    value = cf->args->elts;
-
-    if(cf->args->nelts > 1) {
-        if(ngx_strcmp(value[1].data, "recursive") == 0) {
-            uzcf->recursive = 1;
-        }
-    }
 
     if(ngx_http_upload_add_filter(ulcf, &ngx_http_unzip_content_filter, cf->pool) != NGX_OK) {
         return NGX_CONF_ERROR;
@@ -385,7 +362,7 @@ static ngx_int_t /* {{{ ngx_http_unzip_process_chain */
 ngx_http_unzip_process_chain(ngx_unzip_ctx_t *ctx, ngx_chain_t *chain) {
     ngx_int_t result;
     ngx_buf_t *buf;
-    ngx_unzip_conf_t *uzcf;
+    ngx_unzip_loc_conf_t *uzcf;
 
     uzcf = ngx_http_get_module_loc_conf(ctx->upload_ctx->request, ngx_upload_unzip_filter_module); 
 
@@ -855,7 +832,7 @@ ngx_http_unzip_process_chain(ngx_unzip_ctx_t *ctx, ngx_chain_t *chain) {
 
 static ngx_int_t /* {{{ ngx_http_unzip_start_handler */
 ngx_http_unzip_start_handler(ngx_http_upload_ctx_t *u) {
-    ngx_unzip_conf_t           *uzcf;
+    ngx_unzip_loc_conf_t           *uzcf;
     ngx_unzip_ctx_t            *ctx, *parent;
     ngx_http_upload_loc_conf_t *ulcf;
 
@@ -954,16 +931,16 @@ ngx_http_unzip_data_handler(ngx_http_upload_ctx_t *u, ngx_chain_t *chain) {
 static void * /* {{{ ngx_upload_unzip_create_loc_conf */
 ngx_upload_unzip_create_loc_conf(ngx_conf_t *cf)
 {
-    ngx_unzip_conf_t  *conf;
+    ngx_unzip_loc_conf_t  *conf;
 
-    conf = ngx_pcalloc(cf->pool, sizeof(ngx_unzip_conf_t));
+    conf = ngx_pcalloc(cf->pool, sizeof(ngx_unzip_loc_conf_t));
     if (conf == NULL) {
         return NGX_CONF_ERROR;
     }
 
-    conf->wbits = 15;
-    conf->bufs.num = 4;
-    conf->bufs.size = ngx_pagesize;
+    conf->wbits = NGX_CONF_UNSET_SIZE;
+    conf->memlevel = NGX_CONF_UNSET_SIZE;
+    conf->max_file_name_len = NGX_CONF_UNSET_SIZE;
 
     /*
      * conf->bufs
@@ -971,6 +948,25 @@ ngx_upload_unzip_create_loc_conf(ngx_conf_t *cf)
      */
 
     return conf;
+} /* }}} */
+
+static char * /* {{{ ngx_upload_unzip_merge_loc_conf */
+ngx_upload_unzip_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
+{
+    ngx_unzip_loc_conf_t  *prev = parent;
+    ngx_unzip_loc_conf_t  *conf = child;
+
+    ngx_conf_merge_bufs_value(conf->bufs, prev->bufs, 4, ngx_pagesize);
+
+    ngx_conf_merge_size_value(conf->wbits, prev->wbits, MAX_WBITS);
+    ngx_conf_merge_size_value(conf->memlevel, prev->memlevel,
+                              MAX_MEM_LEVEL - 1);
+
+    ngx_conf_merge_size_value(conf->max_file_name_len,
+                              prev->max_file_name_len,
+                              (size_t) 256);
+
+    return NGX_CONF_OK;
 } /* }}} */
 
 static char * /* {{{ ngx_http_unzip_window */
@@ -996,6 +992,29 @@ ngx_http_unzip_window(ngx_conf_t *cf, void *post, void *data)
     return "must be 512, 1k, 2k, 4k, 8k, 16k, or 32k";
 } /* }}} */
 
+static char * /* {{{ ngx_http_unzip_hash */
+ngx_http_unzip_hash(ngx_conf_t *cf, void *post, void *data)
+{   
+    int *np = data;
+
+    int  memlevel, hsize;
+
+    memlevel = 9;
+
+    for (hsize = 128 * 1024; hsize > 256; hsize >>= 1) {
+
+        if (hsize == *np) {
+            *np = memlevel;
+
+            return NGX_CONF_OK; 
+        }
+
+        memlevel--;
+    }
+
+    return "must be 512, 1k, 2k, 4k, 8k, 16k, 32k, 64k, or 128k";
+} /* }}} */
+
 static ngx_int_t /* {{{ ngx_http_unzip_set_decompression_method */
 ngx_http_unzip_set_decompression_method(ngx_unzip_ctx_t *ctx, uint16_t compression_method)
 {
@@ -1019,8 +1038,8 @@ ngx_http_unzip_set_decompression_method(ngx_unzip_ctx_t *ctx, uint16_t compressi
 static ngx_int_t /* {{{ ngx_http_unzip_inflate_start */
 ngx_http_unzip_inflate_start(ngx_unzip_ctx_t *ctx) {
     ngx_int_t rc;
-    ngx_unzip_conf_t           *uzcf;
-    unsigned int               wbits, memlevel;
+    ngx_unzip_loc_conf_t           *uzcf;
+    int                            wbits, memlevel;
 
     ctx->stream.zalloc = ngx_http_unzip_filter_alloc;
     ctx->stream.zfree = ngx_http_unzip_filter_free;
@@ -1057,7 +1076,7 @@ ngx_http_unzip_inflate_start(ngx_unzip_ctx_t *ctx) {
 
             /* the actual zlib window size is smaller by 262 bytes */
 
-            while (ctx->local_data_header.uncompressed_size < ((1 << (wbits - 1)) - 262)) {
+            while ((off_t)ctx->local_data_header.uncompressed_size < ((1 << (wbits - 1)) - 262)) {
                 wbits--;
                 memlevel--;
             }
