@@ -1,4 +1,10 @@
 
+Version 2.1.1
+ * Change: file size and output body size restrictions
+ * Added feature: directive upload_pass_args enables forwarding
+   of request arguments to a backend. Thanks to Todd Fisher.
+ * Added feature: guessing of file's content type via file extension
+
 Version 2.1.0
  * Added feature: upload filters, unzip and discarding filter
  * Added feature: guessing content type using file extensions

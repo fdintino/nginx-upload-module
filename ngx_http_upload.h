@@ -38,6 +38,7 @@
 #define NGX_UPLOAD_NOMEM        -2
 #define NGX_UPLOAD_IOERROR      -3
 #define NGX_UPLOAD_SCRIPTERROR  -4
+#define NGX_UPLOAD_TOOLARGE     -5
 
 /*
  * State of multipart/form-data parser
@@ -120,13 +121,17 @@ typedef struct ngx_http_upload_loc_conf_s {
     ngx_uint_t        store_access;
     size_t            buffer_size;
     size_t            max_header_len;
+    size_t            max_output_body_len;
+    off_t             max_file_size;
     ngx_array_t       *field_templates;
     ngx_array_t       *aggregate_field_templates;
     ngx_array_t       *field_filters;
     ngx_array_t       *cleanup_statuses;
+    ngx_flag_t         forward_args;
 
     ngx_array_t       *content_filters;
     ngx_array_t       *content_type_map;
+    ngx_array_t       *void_content_types;
 
     ngx_str_t         archive_elm_separator;
     ngx_str_t         archive_path_separator;
