@@ -520,10 +520,10 @@ ngx_http_upload_handler(ngx_http_request_t *r)
     ngx_http_upload_ctx_t     *u;
     ngx_int_t                 rc;
 
-    ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
-
     if (!(r->method & NGX_HTTP_POST))
         return NGX_DECLINED;
+
+    ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
 
     u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
 
