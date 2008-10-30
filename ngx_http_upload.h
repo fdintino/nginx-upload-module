@@ -95,7 +95,7 @@ struct ngx_http_upload_loc_conf_s;
 
 typedef struct {
     ngx_str_t                           content_type;
-    struct ngx_http_upload_loc_conf_s   *conf;
+    ngx_http_core_loc_conf_t            *conf;
 } ngx_upload_content_type_map_t;
 
 /*
@@ -180,6 +180,7 @@ typedef struct ngx_http_upload_ctx_s {
 
     ngx_http_request_t  *request;
     ngx_log_t           *log;
+    void                **original_loc_conf;
 
     ngx_file_t          output_file;
     ngx_chain_t         *chain;

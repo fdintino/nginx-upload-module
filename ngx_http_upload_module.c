@@ -1592,7 +1592,7 @@ ngx_http_upload_cleanup(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
 static ngx_uint_t /* {{{ ngx_http_upload_add_slave_conf */
 ngx_http_upload_add_slave_conf(ngx_str_t *content_type, ngx_array_t **content_type_map,
-    ngx_http_upload_loc_conf_t *ulcf, ngx_pool_t *pool)
+    ngx_http_core_loc_conf_t *clcf, ngx_pool_t *pool)
 {
     ngx_upload_content_type_map_t *ctmap;
 
@@ -1610,7 +1610,7 @@ ngx_http_upload_add_slave_conf(ngx_str_t *content_type, ngx_array_t **content_ty
     }
 
     ctmap->content_type = *content_type;
-    ctmap->conf = ulcf;
+    ctmap->conf = clcf;
 
     return NGX_OK;
 } /* }}} */
@@ -1691,20 +1691,20 @@ ngx_http_upload_filter_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     ulcf->parent = pulcf;
 
-    for (i = 1; i < cf->args->nelts; i++) {
-        if(ngx_http_upload_add_slave_conf(&value[i], &pulcf->content_type_map,
-            ulcf, cf->pool) != NGX_OK) 
-        {
-            return NGX_CONF_ERROR;
-        }
-    }
-
     pclcf = pctx->loc_conf[ngx_http_core_module.ctx_index];
 
     clcf = ctx->loc_conf[ngx_http_core_module.ctx_index];
     clcf->loc_conf = ctx->loc_conf;
     clcf->name = pclcf->name;
     clcf->noname = 1;
+
+    for (i = 1; i < cf->args->nelts; i++) {
+        if(ngx_http_upload_add_slave_conf(&value[i], &pulcf->content_type_map,
+            clcf, cf->pool) != NGX_OK) 
+        {
+            return NGX_CONF_ERROR;
+        }
+    }
 
     if (ngx_http_add_location(cf, &pclcf->locations, clcf) != NGX_OK) {
         return NGX_CONF_ERROR;
@@ -1741,7 +1741,7 @@ ngx_http_upload_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     return NGX_CONF_OK;
 } /* }}} */
 
-ngx_upload_field_filter_t* /* {{{ ngx_upload_get_next_content_filter */
+ngx_upload_field_filter_t* /* {{{ ngx_upload_get_next_field_filter */
 ngx_upload_get_next_field_filter(ngx_http_upload_ctx_t *ctx) {
     return &ngx_write_field_filter;
 } /* }}} */
@@ -2314,27 +2314,36 @@ static ngx_int_t /* {{{ ngx_upload_set_content_filter */
 ngx_upload_set_content_filter(ngx_http_upload_ctx_t *u, ngx_str_t *content_type)
 {
     ngx_uint_t                  i;
-    ngx_http_upload_loc_conf_t  *ulcf;
+    ngx_http_upload_loc_conf_t  *pulcf, *ulcf;
     ngx_upload_content_type_map_t  *ulctm;
 
-    ulcf = ngx_http_get_module_loc_conf(u->request, ngx_http_upload_module);
+    pulcf = ngx_http_get_module_loc_conf(u->request, ngx_http_upload_module);
+
+    if(pulcf->parent) {
+        pulcf = pulcf->parent;
+    }
 
     u->current_content_filter_idx = 0;
 
-    if (content_type->len && ulcf->content_type_map != NULL) {
-        for (i = 0; i < ulcf->content_type_map->nelts; i++) {
-            ulctm = ulcf->content_type_map->elts;
+    if (content_type->len && pulcf->content_type_map != NULL) {
+        ulctm = pulcf->content_type_map->elts;
+        for (i = 0; i < pulcf->content_type_map->nelts; i++) {
 
-            ulctm += i;
+            if(ngx_strncasecmp(ulctm[i].content_type.data, content_type->data, content_type->len) == 0) {
+                /*
+                 * Got to slave configuration
+                 */
+                u->request->loc_conf = ulctm[i].conf->loc_conf;
 
-            if(ngx_strcmp(ulctm->content_type.data, content_type->data) == 0) {
-                u->current_content_filter_chain = ulctm->conf->content_filters;
+                ulcf = ngx_http_get_module_loc_conf(u->request, ngx_http_upload_module);
+
+                u->current_content_filter_chain = ulcf->content_filters;
                 return NGX_OK;
             }
         }
     }
 
-    u->current_content_filter_chain = ulcf->content_filters;
+    u->current_content_filter_chain = pulcf->content_filters;
 
     return NGX_OK;
 } /* }}} */
@@ -2357,6 +2366,8 @@ static ngx_int_t upload_start_part(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ *
 
             upload_ctx->content_type = content_type;
         }
+
+        upload_ctx->original_loc_conf = upload_ctx->request->loc_conf;
 
         ngx_upload_set_content_filter(upload_ctx, &upload_ctx->content_type);
 
@@ -2391,6 +2402,8 @@ static void upload_finish_part(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
     upload_discard_part_attributes(upload_ctx);
 
     upload_ctx->discard_data = 0;
+
+    upload_ctx->request->loc_conf = upload_ctx->original_loc_conf;
 } /* }}} */
 
 static void upload_abort_part(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
@@ -2400,6 +2413,8 @@ static void upload_abort_part(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
     upload_discard_part_attributes(upload_ctx);
 
     upload_ctx->discard_data = 0;
+
+    upload_ctx->request->loc_conf = upload_ctx->original_loc_conf;
 } /* }}} */
 
 static void upload_flush_output_buffer(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */

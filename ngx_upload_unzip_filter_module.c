@@ -964,7 +964,7 @@ ngx_upload_unzip_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_size_value(conf->max_file_name_len,
                               prev->max_file_name_len,
-                              (size_t) 256);
+                              (size_t) 512);
 
     return NGX_CONF_OK;
 } /* }}} */
