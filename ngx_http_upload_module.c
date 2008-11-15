@@ -319,7 +319,7 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
       * Specifies the whether or not to guess content type
       * via file extension for specified content types
       */
-     { ngx_string("upload_void_content_types"),
+     { ngx_string("upload_void_content_type"),
        NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF
                          |NGX_CONF_1MORE,
        ngx_conf_set_str_array_slot,
