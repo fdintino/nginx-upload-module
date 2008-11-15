@@ -2304,8 +2304,11 @@ ngx_upload_resolve_content_type(ngx_http_upload_ctx_t *u, ngx_str_t *exten, ngx_
         }
     }
 
-    content_type->len = sizeof("application/octet-stream") - 1;
-    content_type->data = (u_char*)"application/octet-stream";
+    /*
+     * Content type defaults to text/plain according to rfc 2388
+     */
+    content_type->len = sizeof("text/plain") - 1;
+    content_type->data = (u_char*)"text/plain";
 
     return NGX_OK;
 } /* }}} */
