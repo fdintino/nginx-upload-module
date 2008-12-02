@@ -674,7 +674,12 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
         ngx_sprintf(r->headers_in.content_length->value.data, "%O", r->headers_in.content_length_n)
             - r->headers_in.content_length->value.data;
 
-    rc = ngx_http_internal_redirect(r, uri, &args);
+    if(uri->len != 0 && uri->data[0] == '/') {
+        rc = ngx_http_internal_redirect(r, uri, &args);
+    }
+    else{
+        rc = ngx_http_named_location(r, uri);
+    }
 
     if (rc == NGX_ERROR) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -978,7 +983,7 @@ static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u, u
             ngx_crc32_update(&u->crc32, buf, len);
 
         if(ulcf->max_file_size != 0) {
-            if(u->output_file.offset + (off_t)len > ulcf->max_file_size)
+            if(u->output_file.offset + len > ulcf->max_file_size)
                 return NGX_UPLOAD_TOOLARGE;
         }
 
