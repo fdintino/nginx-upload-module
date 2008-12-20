@@ -1,4 +1,8 @@
 
+Version 2.0.8
+ * Fixed bug: crash on missing Content-Type request header
+ * Fixed bug: compilation problem on amd 64
+
 Version 2.0.7
  * Change: file size and output body size restrictions
  * Added feature: directive upload_pass_args enables forwarding

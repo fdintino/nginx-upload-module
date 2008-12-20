@@ -560,7 +560,7 @@ ngx_http_upload_handler(ngx_http_request_t *r)
 
     // Check whether Content-Type header is missing
     if(r->headers_in.content_type == NULL) {
-        ngx_log_error(NGX_LOG_ERR, u->log, ngx_errno,
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
                       "missing Content-Type header");
         return NGX_HTTP_BAD_REQUEST;
     }
