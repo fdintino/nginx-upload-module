@@ -1,5 +1,6 @@
 
 Version 2.0.8
+ * Change: support for named locations
  * Fixed bug: crash on missing Content-Type request header
  * Fixed bug: compilation problem on amd 64
 
