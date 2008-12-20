@@ -983,7 +983,7 @@ static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u, u
             ngx_crc32_update(&u->crc32, buf, len);
 
         if(ulcf->max_file_size != 0) {
-            if(u->output_file.offset + len > ulcf->max_file_size)
+            if(u->output_file.offset + (off_t)len > ulcf->max_file_size)
                 return NGX_UPLOAD_TOOLARGE;
         }
 
