@@ -1947,6 +1947,25 @@ ngx_http_read_upload_client_request_body_handler(ngx_http_request_t *r)
     }
 } /* }}} */
 
+static ngx_int_t
+ngx_http_upload_return_code(ngx_http_request_t *r, ngx_int_t rc) {
+    switch(rc) {
+        case NGX_OK:
+            break;
+        case NGX_UPLOAD_MALFORMED:
+            return NGX_HTTP_BAD_REQUEST;
+        case NGX_UPLOAD_TOOLARGE:
+            return NGX_HTTP_REQUEST_ENTITY_TOO_LARGE;
+        case NGX_UPLOAD_IOERROR:
+            return NGX_HTTP_SERVICE_UNAVAILABLE;
+        case NGX_UPLOAD_NOMEM: case NGX_UPLOAD_SCRIPTERROR:
+        default:
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    return NGX_OK;
+}
+
 static ngx_int_t /* {{{ ngx_http_do_read_upload_client_request_body */
 ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
 {
@@ -1968,20 +1987,11 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
         for ( ;; ) {
             if (rb->buf->last == rb->buf->end) {
 
-                rc = ngx_http_process_request_body(r, rb->to_write);
+                rc = ngx_http_upload_return_code(r,
+                    ngx_http_process_request_body(r, rb->to_write));
 
-                switch(rc) {
-                    case NGX_OK:
-                        break;
-                    case NGX_UPLOAD_MALFORMED:
-                        return NGX_HTTP_BAD_REQUEST;
-                    case NGX_UPLOAD_TOOLARGE:
-                        return NGX_HTTP_REQUEST_ENTITY_TOO_LARGE;
-                    case NGX_UPLOAD_IOERROR:
-                        return NGX_HTTP_SERVICE_UNAVAILABLE;
-                    case NGX_UPLOAD_NOMEM: case NGX_UPLOAD_SCRIPTERROR:
-                    default:
-                        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+                if(rc != NGX_OK) {
+                    return rc;
                 }
 
                 rb->to_write = rb->bufs->next ? rb->bufs->next : rb->bufs;
@@ -2049,20 +2059,11 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
         ngx_del_timer(c->read);
     }
 
-    rc = ngx_http_process_request_body(r, rb->to_write);
+    rc = ngx_http_upload_return_code(r,
+        ngx_http_process_request_body(r, rb->to_write));
 
-    switch(rc) {
-        case NGX_OK:
-            break;
-        case NGX_UPLOAD_MALFORMED:
-            return NGX_HTTP_BAD_REQUEST;
-        case NGX_UPLOAD_TOOLARGE:
-            return NGX_HTTP_REQUEST_ENTITY_TOO_LARGE;
-        case NGX_UPLOAD_IOERROR:
-            return NGX_HTTP_SERVICE_UNAVAILABLE;
-        case NGX_UPLOAD_NOMEM: case NGX_UPLOAD_SCRIPTERROR:
-        default:
-            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    if(rc != NGX_OK) {
+        return rc;
     }
 
     upload_shutdown_ctx(u);
