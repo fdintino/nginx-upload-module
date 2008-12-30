@@ -102,6 +102,7 @@ typedef struct {
     ngx_array_t       *field_filters;
     ngx_array_t       *cleanup_statuses;
     ngx_flag_t         forward_args;
+    ngx_buf_t         bufs;
 
     unsigned int      md5:1;
     unsigned int      sha1:1;
@@ -125,6 +126,8 @@ typedef struct ngx_http_upload_ctx_s {
     ngx_str_t           boundary;
     u_char              *boundary_start;
     u_char              *boundary_pos;
+    u_char              *buggy_boundary_start;
+    u_char              *buggy_boundary_pos;
 
     upload_state_t		state;
 
@@ -136,23 +139,26 @@ typedef struct ngx_http_upload_ctx_s {
     ngx_str_t           file_name;
     ngx_str_t           content_type;
 
-    u_char              *output_buffer;
-    u_char              *output_buffer_end;
-    u_char              *output_buffer_pos;
-
     ngx_int_t (*start_part_f)(struct ngx_http_upload_ctx_s *upload_ctx);
     void (*finish_part_f)(struct ngx_http_upload_ctx_s *upload_ctx);
     void (*abort_part_f)(struct ngx_http_upload_ctx_s *upload_ctx);
-	ngx_int_t (*flush_output_buffer_f)(struct ngx_http_upload_ctx_s *upload_ctx, u_char *buf, size_t len);
+	ngx_int_t (*process_chain_f)(struct ngx_http_upload_ctx_s *upload_ctx, ngx_chain_t *chain);
 
     ngx_http_request_t  *request;
     ngx_log_t           *log;
 
     ngx_file_t          output_file;
-    ngx_chain_t         *chain;
-    ngx_chain_t         *last;
-    ngx_chain_t         *checkpoint;
+    ngx_chain_t         *output_body_chain;
+    ngx_chain_t         *output_body_last;
+    ngx_chain_t         *output_body_checkpoint;
     size_t              output_body_len;
+
+    ngx_chain_t         *free;
+    ngx_chain_t         *output_chain;
+    ngx_chain_t         *output_last;
+    ngx_uint_t          bufs_limit;
+
+    ngx_buf_t           replacement_buf;
 
     ngx_pool_cleanup_t          *cln;
 
@@ -164,6 +170,8 @@ typedef struct ngx_http_upload_ctx_s {
     unsigned int        discard_data:1;
     unsigned int        is_file:1;
     unsigned int        calculate_crc32:1;
+    unsigned int        potentially_spanning_boundary:1;
+    unsigned int        replacement:1;
 } ngx_http_upload_ctx_t;
 
 static ngx_int_t ngx_http_upload_handler(ngx_http_request_t *r);
@@ -189,8 +197,8 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u);
 static void ngx_http_upload_finish_handler(ngx_http_upload_ctx_t *u);
 static void ngx_http_upload_abort_handler(ngx_http_upload_ctx_t *u);
 
-static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u,
-    u_char *buf, size_t len);
+static ngx_int_t ngx_http_upload_process_chain(ngx_http_upload_ctx_t *u,
+    ngx_chain_t *chain);
 static ngx_int_t ngx_http_upload_append_field(ngx_http_upload_ctx_t *u,
     ngx_str_t *name, ngx_str_t *value);
 
@@ -271,13 +279,14 @@ static ngx_int_t upload_start(ngx_http_upload_ctx_t *upload_ctx, ngx_http_upload
  */
 static ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ngx_str_t *content_type);
 
+static ngx_int_t upload_flush_output_chain(ngx_http_upload_ctx_t *u);
+
 /*
- * upload_process_buf
+ * upload_process_chain
  *
- * Process buffer with multipart stream starting from start and terminating
- * by end, operating on upload_ctx. The header information is accumulated in
- * This call can invoke one or more calls to start_upload_file, finish_upload_file,
- * abort_upload_file and flush_output_buffer routines.
+ * Process chain of buffers with multipart stream operating on upload_ctx. The header
+ * information is accumulated in upload_ctx. This call can invoke one or more calls to
+ * upload_start_part, upload_finish_part, upload_abort_part and process_output_chain routines.
  *
  * Returns value NGX_OK successful
  *               NGX_UPLOAD_MALFORMED stream is malformed
@@ -286,7 +295,7 @@ static ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ng
  *               NGX_UPLOAD_SCRIPTERROR nginx script engine failed
  *               NGX_UPLOAD_TOOLARGE field body is too large
  */
-static ngx_int_t upload_process_buf(ngx_http_upload_ctx_t *upload_ctx, u_char *start, u_char *end);
+static ngx_int_t upload_process_chain(ngx_http_upload_ctx_t *u, ngx_chain_t *chain);
 
 static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
 
@@ -567,8 +576,9 @@ ngx_http_upload_handler(ngx_http_request_t *r)
 
     u->request = r;
     u->log = r->connection->log;
-    u->chain = u->last = u->checkpoint = NULL;
+    u->output_body_chain = u->output_body_last = u->output_body_checkpoint = NULL;
     u->output_body_len = 0;
+    u->bufs_limit = ulcf->bufs.num;
 
     upload_init_ctx(u);
 
@@ -625,12 +635,12 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
     cl->buf = b;
     cl->next = NULL;
     
-    if(ctx->chain == NULL) {
-        ctx->chain = cl;
-        ctx->last = cl;
+    if(ctx->output_body_chain == NULL) {
+        ctx->output_body_chain = cl;
+        ctx->output_body_last = cl;
     }else{
-        ctx->last->next = cl;
-        ctx->last = cl;
+        ctx->output_body_last->next = cl;
+        ctx->output_body_last = cl;
     }
 
     b->last = ngx_cpymem(b->last, ctx->boundary.data, ctx->boundary.len);
@@ -656,12 +666,12 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    r->request_body->bufs = ctx->chain;
+    r->request_body->bufs = ctx->output_body_chain;
 
     // Recalculate content length
     r->headers_in.content_length_n = 0;
 
-    for(cl = ctx->chain ; cl ; cl = cl->next)
+    for(cl = ctx->output_body_chain ; cl ; cl = cl->next)
         r->headers_in.content_length_n += (cl->buf->last - cl->buf->pos);
 
     r->headers_in.content_length->value.data = ngx_palloc(r->pool, NGX_OFF_T_LEN);
@@ -833,7 +843,7 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
         if(pass_field && u->field_name.len > 0) { 
             /*
              * Here we do a small hack: the content of a normal field
-             * is not known until ngx_http_upload_flush_output_buffer
+             * is not known until ngx_http_upload_process_chain
              * is called. We pass empty field value to simplify things.
              */
             rc = ngx_http_upload_append_field(u, &u->field_name, &ngx_http_upload_empty_field_value);
@@ -913,7 +923,7 @@ static void ngx_http_upload_finish_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
     }
 
     // Checkpoint current output chain state
-    u->checkpoint = u->last;
+    u->output_body_checkpoint = u->output_body_last;
     return;
 
 rollback:
@@ -952,22 +962,24 @@ static void ngx_http_upload_abort_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
     }
 
     // Rollback output chain to the previous consistant state
-    if(u->checkpoint != NULL) {
-        u->last = u->checkpoint;
-        u->last->next = NULL;
+    if(u->output_body_checkpoint != NULL) {
+        u->output_body_last = u->output_body_checkpoint;
+        u->output_body_last->next = NULL;
     }else{
-        u->chain = u->last = NULL;
+        u->output_body_chain = u->output_body_last = NULL;
         u->first_part = 1;
     }
 } /* }}} */
 
-static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u, u_char *buf, size_t len) { /* {{{ */
-    ngx_http_request_t             *r = u->request;
+static ngx_int_t ngx_http_upload_process_chain(ngx_http_upload_ctx_t *u, ngx_chain_t *chain) { /* {{{ */
+/*    ngx_http_request_t             *r = u->request;
     ngx_buf_t                      *b;
     ngx_chain_t                    *cl;
-    ngx_http_upload_loc_conf_t     *ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
+    ngx_http_upload_loc_conf_t     *ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);*/
 
-    if(u->is_file) {
+    return NGX_OK;
+
+/*    if(u->is_file) {
         if(u->md5_ctx)
             MD5Update(&u->md5_ctx->md5, buf, len);
 
@@ -1014,16 +1026,16 @@ static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u, u
 
         b->last = ngx_cpymem(b->last, buf, len);
 
-        if(u->chain == NULL) {
-            u->chain = cl;
-            u->last = cl;
+        if(u->output_body_chain == NULL) {
+            u->output_body_chain = cl;
+            u->output_body_last = cl;
         }else{
-            u->last->next = cl;
-            u->last = cl;
+            u->output_body_last->next = cl;
+            u->output_body_last = cl;
         }
 
         return NGX_OK;
-    }
+    }*/
 } /* }}} */
 
 static void /* {{{ ngx_http_upload_append_str */
@@ -1042,12 +1054,12 @@ ngx_http_upload_append_str(ngx_http_upload_ctx_t *u, ngx_buf_t *b, ngx_chain_t *
     cl->buf = b;
     cl->next = NULL;
 
-    if(u->chain == NULL) {
-        u->chain = cl;
-        u->last = cl;
+    if(u->output_body_chain == NULL) {
+        u->output_body_chain = cl;
+        u->output_body_last = cl;
     }else{
-        u->last->next = cl;
-        u->last = cl;
+        u->output_body_last->next = cl;
+        u->output_body_last = cl;
     }
 
     u->output_body_len += s->len;
@@ -1959,14 +1971,14 @@ ngx_http_process_request_body(ngx_http_request_t *r, ngx_chain_t *body)
 
     // Feed all the buffers into multipart/form-data processor
     while(body) {
-        rc = upload_process_buf(u, body->buf->pos, body->buf->last);
+        rc = upload_process_chain(u, body);
 
         if(rc != NGX_OK)
             return rc;
 
         // Signal end of body
         if(body->buf->last_buf) {
-            rc = upload_process_buf(u, body->buf->pos, body->buf->pos);
+            rc = upload_process_chain(u, NULL);
 
             if(rc != NGX_OK)
                 return rc;
@@ -2115,17 +2127,6 @@ static void upload_abort_file(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
     upload_ctx->discard_data = 0;
 } /* }}} */
 
-static void upload_flush_output_buffer(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
-    if(upload_ctx->output_buffer_pos > upload_ctx->output_buffer) {
-        if(upload_ctx->flush_output_buffer_f)
-            if(upload_ctx->flush_output_buffer_f(upload_ctx, (void*)upload_ctx->output_buffer, 
-                (size_t)(upload_ctx->output_buffer_pos - upload_ctx->output_buffer)) != NGX_OK)
-                upload_ctx->discard_data = 1;
-
-        upload_ctx->output_buffer_pos = upload_ctx->output_buffer;	
-    }
-} /* }}} */
-
 static void upload_init_ctx(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
     upload_ctx->boundary.data = upload_ctx->boundary_start = upload_ctx->boundary_pos = 0;
 
@@ -2145,14 +2146,14 @@ static void upload_init_ctx(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
 	upload_ctx->start_part_f = ngx_http_upload_start_handler;
 	upload_ctx->finish_part_f = ngx_http_upload_finish_handler;
 	upload_ctx->abort_part_f = ngx_http_upload_abort_handler;
-	upload_ctx->flush_output_buffer_f = ngx_http_upload_flush_output_buffer;
+	upload_ctx->process_chain_f = ngx_http_upload_process_chain;
 } /* }}} */
 
 static void upload_shutdown_ctx(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
 	if(upload_ctx != 0) {
         // Abort file if we still processing it
         if(upload_ctx->state == upload_state_data) {
-            upload_flush_output_buffer(upload_ctx);
+            upload_flush_output_chain(upload_ctx);
             upload_abort_file(upload_ctx);
         }
 
@@ -2171,14 +2172,6 @@ static ngx_int_t upload_start(ngx_http_upload_ctx_t *upload_ctx, ngx_http_upload
 
 	upload_ctx->header_accumulator_pos = upload_ctx->header_accumulator;
 	upload_ctx->header_accumulator_end = upload_ctx->header_accumulator + ulcf->max_header_len;
-
-	upload_ctx->output_buffer = ngx_pcalloc(upload_ctx->request->pool, ulcf->buffer_size);
-
-	if(upload_ctx->output_buffer == NULL)
-		return NGX_ERROR;
-
-    upload_ctx->output_buffer_pos = upload_ctx->output_buffer;
-    upload_ctx->output_buffer_end = upload_ctx->output_buffer + ulcf->buffer_size;
 
     upload_ctx->header_accumulator_pos = upload_ctx->header_accumulator;
 
@@ -2226,7 +2219,7 @@ static ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ng
 
     // Allocate memory for entire boundary plus \r\n-- plus terminating character
     upload_ctx->boundary.len = boundary_end_ptr - boundary_start_ptr + 4;
-    upload_ctx->boundary.data = ngx_palloc(upload_ctx->request->pool, upload_ctx->boundary.len + 1);
+    upload_ctx->boundary.data = ngx_palloc(upload_ctx->request->pool, upload_ctx->boundary.len * 3);
 
     if(upload_ctx->boundary.data == NULL)
         return NGX_UPLOAD_NOMEM;
@@ -2240,6 +2233,11 @@ static ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ng
     upload_ctx->boundary.data[2] = '-'; 
     upload_ctx->boundary.data[3] = '-'; 
 
+    // Now initialize replacement buffer
+    upload_ctx->replacement_buf.last = upload_ctx->replacement_buf.pos
+        = upload_ctx->replacement_buf.start = upload_ctx->boundary.data + upload_ctx->boundary.len;
+    upload_ctx->replacement_buf.end = upload_ctx->boundary.data + upload_ctx->boundary.len * 3;
+
     /*
      * NOTE: first boundary doesn't start with \r\n. Here we
      * advance 2 positions forward. We will return 2 positions back 
@@ -2248,155 +2246,339 @@ static ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ng
     upload_ctx->boundary_start = upload_ctx->boundary.data + 2;
     upload_ctx->boundary_pos = upload_ctx->boundary_start;
 
+    upload_ctx->buggy_boundary_start = upload_ctx->boundary.data + 1;
+    upload_ctx->buggy_boundary_pos = upload_ctx->boundary_start + 1;
+
     return NGX_OK;
 } /* }}} */
 
-static void upload_putc(ngx_http_upload_ctx_t *upload_ctx, u_char c) { /* {{{ */
-    if(!upload_ctx->discard_data) {
-        *upload_ctx->output_buffer_pos = c;
+static ngx_int_t upload_flush_output_chain(ngx_http_upload_ctx_t *u) { /* {{{ */
+    ngx_int_t rc = NGX_OK;
+    ngx_chain_t *cl, *next;
 
-        upload_ctx->output_buffer_pos++;
+    if(u->process_chain_f && !u->discard_data) {
+        rc = u->process_chain_f(u, u->output_chain);
 
-        if(upload_ctx->output_buffer_pos == upload_ctx->output_buffer_end)
-            upload_flush_output_buffer(upload_ctx);	
+        if(rc != NGX_OK) {
+            u->discard_data = 1;
+        }
     }
+
+    /*
+     * Reclaim output chain
+     */
+    if(u->output_chain) {
+        cl = u->output_chain;
+
+        while(cl != NULL) {
+            next = cl->next;
+
+            cl->next = u->free;
+            u->free = cl;
+             
+            cl = next;
+        }
+
+        u->output_chain = cl;
+    }
+
+    return rc;
 } /* }}} */
 
-static ngx_int_t upload_process_buf(ngx_http_upload_ctx_t *upload_ctx, u_char *start, u_char *end) { /* {{{ */
+static ngx_int_t ngx_http_upload_start_buf(ngx_http_upload_ctx_t *u, ngx_buf_t *in_buf, ngx_buf_t **out_buf) {
+    ngx_buf_t       *b;
+    ngx_chain_t     *cl;
 
-	u_char *p;
-    ngx_int_t rc;
+    if(u->free) {
+        cl = u->free;
+        u->free = cl->next;
+        b = cl->buf;
+    }
+    else{
+        b = ngx_alloc_buf(u->request->pool);
 
-	// No more data?
-	if(start == end) {
-		if(upload_ctx->state != upload_state_finish)
-			return NGX_UPLOAD_MALFORMED; // Signal error if still haven't finished
-		else
-			return NGX_OK; // Otherwise confirm end of stream
+        if(b == NULL) {
+            return NGX_UPLOAD_NOMEM;
+        }
+
+        cl = ngx_alloc_chain_link(u->request->pool);
+
+        if(cl == NULL) {
+            return NGX_UPLOAD_NOMEM;
+        }
+
+        u->bufs_limit--;
+
+        cl->buf = b;
+        cl->next = NULL;
     }
 
-	for(p = start; p != end; p++) {
-		switch(upload_ctx->state) {
-			/*
-			 * Seek the boundary
-			 */
-			case upload_state_boundary_seek:
-				if(*p == *upload_ctx->boundary_pos) 
-					upload_ctx->boundary_pos++;
-				else
-					upload_ctx->boundary_pos = upload_ctx->boundary_start;
+    if(u->output_chain != NULL)  {
+        u->output_last->next = cl;
+        u->output_last = cl;
+    }else{
+        u->output_chain = cl;
+        u->output_last = cl;
+    }
 
-				if(upload_ctx->boundary_pos == upload_ctx->boundary.data + upload_ctx->boundary.len) {
-					upload_ctx->state = upload_state_after_boundary;
-					upload_ctx->boundary_start = upload_ctx->boundary.data;
-					upload_ctx->boundary_pos = upload_ctx->boundary_start;
-				}
-				break;
-			case upload_state_after_boundary:
-				switch(*p) {
-					case '\n':
-						upload_ctx->state = upload_state_headers;
-                        upload_ctx->header_accumulator_pos = upload_ctx->header_accumulator;
-					case '\r':
-						break;
-					case '-':
-						upload_ctx->state = upload_state_finish;
-						break;
-				}
-				break;
-			/*
-			 * Collect and store headers
-			 */
-			case upload_state_headers:
-				switch(*p) {
-					case '\n':
-						if(upload_ctx->header_accumulator_pos == upload_ctx->header_accumulator) {
-                            upload_ctx->is_file = (upload_ctx->file_name.data == 0) || (upload_ctx->file_name.len == 0) ? 0 : 1;
+    ngx_memcpy(cl->buf, in_buf, sizeof(ngx_buf_t));
 
-                            rc = upload_start_file(upload_ctx);
-                            
-                            if(rc != NGX_OK) {
-                                upload_ctx->state = upload_state_finish;
-                                return rc; // User requested to cancel processing
-                            } else {
-                                upload_ctx->state = upload_state_data;
-                                upload_ctx->output_buffer_pos = upload_ctx->output_buffer;	
+    b->pos = b->last = b->start;
+    b->shadow = in_buf;
+    b->tag = in_buf->tag;
+    b->recycled = 1;
+    b->last_shadow = 1;
+
+    *out_buf = b;
+
+    return NGX_OK;
+}
+
+static ngx_int_t upload_process_chain(ngx_http_upload_ctx_t *u, ngx_chain_t *in) { /* {{{ */
+    ngx_chain_t *cl;
+    ngx_buf_t   *in_buf, *out_buf = NULL;
+    u_char *p;
+    ngx_int_t rc, start_buf;
+
+    // No more data?
+    if(in == NULL) {
+        if(u->state != upload_state_finish)
+            return NGX_UPLOAD_MALFORMED; // Signal error if still haven't finished
+        else
+            return NGX_OK; // Otherwise confirm end of stream
+    }
+
+    for(cl = in; cl; cl = cl->next) {
+        in_buf = cl->buf;
+
+        do{
+            start_buf = 0;
+
+            if(u->state == upload_state_data) {
+                /*
+                 * We started at the beginning or in the middle of a part content,
+                 * produce new buffer
+                 */
+                rc = ngx_http_upload_start_buf(u, in_buf, &out_buf);
+
+                if(rc != NGX_OK) {
+                    return rc;
+                }
+
+                out_buf->pos = in_buf->pos;
+            }
+
+            for(p = in_buf->pos; p != in_buf->last && !start_buf; p++) {
+                switch(u->state) {
+                    /*
+                     * Seek the boundary
+                     */
+                    case upload_state_boundary_seek:
+                        if(*p == *u->boundary_pos) 
+                            u->boundary_pos++;
+                        else{
+                            u->boundary_pos = u->boundary_start;
+                        }
+
+                        if(u->boundary_pos == u->boundary.data + u->boundary.len) {
+                            u->state = upload_state_after_boundary;
+                            u->boundary_start = u->boundary.data;
+                            u->boundary_pos = u->boundary_start;
+                        }
+                        break;
+                    /*
+                     * See what kind of boundary it is
+                     */
+                    case upload_state_after_boundary:
+                        switch(*p) {
+                            case LF:
+                                /*
+                                 * It is leading or separating boundary
+                                 */
+                                u->state = upload_state_headers;
+                                u->header_accumulator_pos = u->header_accumulator;
+                            case CR:
+                                break;
+                            case '-':
+                                /*
+                                 * It is terminating boundary
+                                 */
+                                u->state = upload_state_finish;
+                                break;
+                        }
+                        break;
+                    /*
+                     * Collect and store headers
+                     */
+                    case upload_state_headers:
+                        switch(*p) {
+                            case LF:
+                                if(u->header_accumulator_pos == u->header_accumulator) {
+                                    /*
+                                     * Found empty line, now may start the part
+                                     */
+                                    u->is_file = (u->file_name.data == 0) || (u->file_name.len == 0) ? 0 : 1;
+
+                                    rc = upload_start_file(u);
+                                    
+                                    if(rc != NGX_OK) {
+                                        // User requested to cancel processing
+                                        u->state = upload_state_finish;
+                                        return rc;
+                                    } else {
+                                        /*
+                                         *  Restart processing from the current point
+                                         *  with the new buffer
+                                         */
+                                        u->state = upload_state_data;
+                                        start_buf = 1;
+                                        break;
+                                    }
+                                } else {
+                                    *u->header_accumulator_pos = '\0';
+
+                                    rc = upload_parse_part_header(u, (char*)u->header_accumulator,
+                                        (char*)u->header_accumulator_pos);
+
+                                    if(rc != NGX_OK) {
+                                        u->state = upload_state_finish;
+                                        return rc; // Malformed header
+                                    } else
+                                        u->header_accumulator_pos = u->header_accumulator;
+                                }
+                            case CR:
+                                break;
+                            default:
+                                if(u->header_accumulator_pos < u->header_accumulator_end - 1)
+                                    *u->header_accumulator_pos++ = *p;
+                                else {
+                                    u->state = upload_state_finish;
+                                    return NGX_UPLOAD_MALFORMED; // Header is too long
+                                }
+                                break;
+                        }
+                        break;
+                    /*
+                     * Search for separating or terminating boundary
+                     * and output data simultaneously. Here we use NFSM
+                     * to track normal and IE 5.0 buggy boundary
+                     */
+                    case upload_state_data:
+                        if(*p == *u->boundary_pos) {
+                            if((size_t)(in_buf->last - p) < u->boundary.len) {
+                                /*
+                                 * There are reasonable chances that boundary spans over
+                                 * multiple buffers
+                                 */
+                                u->replacement = 1;
                             }
-                        } else {
-                            *upload_ctx->header_accumulator_pos = '\0';
 
-                            rc = upload_parse_part_header(upload_ctx, (char*)upload_ctx->header_accumulator,
-                                (char*)upload_ctx->header_accumulator_pos);
-
-                            if(rc != NGX_OK) {
-                                upload_ctx->state = upload_state_finish;
-                                return rc; // Malformed header
-                            } else
-                                upload_ctx->header_accumulator_pos = upload_ctx->header_accumulator;
+                            u->boundary_pos++;
                         }
-					case '\r':
-						break;
-					default:
-						if(upload_ctx->header_accumulator_pos < upload_ctx->header_accumulator_end - 1)
-							*upload_ctx->header_accumulator_pos++ = *p;
-						else {
-                            upload_ctx->state = upload_state_finish;
-							return NGX_UPLOAD_MALFORMED; // Header is too long
+                        else{
+                            if(!u->potentially_spanning_boundary) {
+                                // Output partially matched lump of boundary
+                                out_buf->last = p;
+                            }
+                            // And reset matched position
+                            u->boundary_start = u->boundary.data;
+                            u->boundary_pos = u->boundary_start;
                         }
-						break;
-				}
-				break;
-			/*
-			 * Search for separating or terminating boundary
-			 * and output data simultaneously
-			 */
-			case upload_state_data:
-				if(*p == *upload_ctx->boundary_pos) 
-					upload_ctx->boundary_pos++;
-				else {
-					if(upload_ctx->boundary_pos == upload_ctx->boundary_start) {
-                        // IE 5.0 bug workaround
-                        if(*p == '\n') {
-                            /*
-                             * Set current matched position beyond LF and prevent outputting
-                             * CR in case of unsuccessful match by altering boundary_start 
-                             */ 
-                            upload_ctx->boundary_pos = upload_ctx->boundary.data + 2;
-                            upload_ctx->boundary_start = upload_ctx->boundary.data + 1;
-                        } else
-                            upload_putc(upload_ctx, *p);
-                    } else {
-						// Output partially matched lump of boundary
-						u_char *q;
-						for(q = upload_ctx->boundary_start; q != upload_ctx->boundary_pos; q++)
-							upload_putc(upload_ctx, *q);
 
-                        p--; // Repeat reading last character
+                        if(u->replacement) {
+                            *u->replacement_buf.last++ = *p;
 
-						// And reset matched position
-                        upload_ctx->boundary_start = upload_ctx->boundary.data;
-						upload_ctx->boundary_pos = upload_ctx->boundary_start;
-					}
-				}
+                            if(u->replacement_buf.last == u->replacement_buf.end) {    
+                                rc = upload_flush_output_chain(u);
 
-				if(upload_ctx->boundary_pos == upload_ctx->boundary.data + upload_ctx->boundary.len) {
-					upload_ctx->state = upload_state_after_boundary;
-					upload_ctx->boundary_pos = upload_ctx->boundary_start;
+                                if(rc != NGX_OK) {
+                                    return rc;
+                                }
+                            }
 
-                    upload_flush_output_buffer(upload_ctx);
-                    if(!upload_ctx->discard_data)
-                        upload_finish_file(upload_ctx);
-                    else
-                        upload_abort_file(upload_ctx);
-				}
-				break;
-			/*
-			 * Skip trailing garbage
-			 */
-			case upload_state_finish:
-				break;
-		}
+                            u->replacement = 0;
+                            start_buf = 1;
+                        }
+
+                        /*
+                         * TODO: IE 5.0 bug workaround
+                         */
+
+                        if(u->boundary_pos == u->boundary.data + u->boundary.len) {
+
+                            u->state = upload_state_after_boundary;
+                            u->boundary_pos = u->boundary_start;
+
+                            if(u->replacement_buf.last == u->replacement_buf.end) {    
+                                rc = upload_flush_output_chain(u);
+
+                                if(rc != NGX_OK) {
+                                    return rc;
+                                }
+
+                                u->replacement_buf.last = u->replacement_buf.pos = u->replacement_buf.start;
+                            }
+
+                            if(!u->discard_data)
+                                upload_finish_file(u);
+                            else
+                                upload_abort_file(u);
+                        }
+                        break;
+                    /*
+                     * Skip trailing garbage
+                     */
+                    case upload_state_finish:
+                    default:
+                        break;
+                }
+            }
+
+            in_buf->pos = p;
+    
+            /*
+             * Check whether we want to output further, but ran
+             * out of shadow buffer limit. Try to flush output chain in
+             * this case.
+             */
+            if(start_buf && u->free == NULL && u->bufs_limit == 0) {
+                rc = upload_flush_output_chain(u);
+
+                if(rc != NGX_OK) {
+                    return rc;
+                }
+            }
+
+        }while(in_buf->pos != in_buf->last);
+
+        /*
+         * Find in which state we stopped to process input buffer
+         */
+        if(u->state == upload_state_data) {
+            /*
+             * We stopped in the middle of a part content,
+             * finallize current buffer
+             */
+            out_buf->last = in_buf->last;
+
+            u->potentially_spanning_boundary = (u->boundary_start != u->boundary_pos) ? 1 : 0;
+        }
 	}
+
+    /*
+     * Find in which state we stopped to process input chain
+     */
+    if(u->state == upload_state_data) {
+        /*
+         * We stopped in the middle of a part content,
+         * flush current chain
+         */
+        rc = upload_flush_output_chain(u);
+
+        if(rc != NGX_OK) {
+            return rc;
+        }
+    }
 
 	return NGX_OK;
 } /* }}} */
