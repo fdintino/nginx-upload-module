@@ -529,10 +529,10 @@ ngx_http_upload_handler(ngx_http_request_t *r)
     ngx_http_upload_ctx_t     *u;
     ngx_int_t                 rc;
 
-    ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
-
     if (!(r->method & NGX_HTTP_POST))
         return NGX_DECLINED;
+
+    ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
 
     u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
 
@@ -569,7 +569,7 @@ ngx_http_upload_handler(ngx_http_request_t *r)
 
     // Check whether Content-Type header is missing
     if(r->headers_in.content_type == NULL) {
-        ngx_log_error(NGX_LOG_ERR, u->log, ngx_errno,
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, ngx_errno,
                       "missing Content-Type header");
         return NGX_HTTP_BAD_REQUEST;
     }
@@ -684,7 +684,12 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
         ngx_sprintf(r->headers_in.content_length->value.data, "%O", r->headers_in.content_length_n)
             - r->headers_in.content_length->value.data;
 
-    rc = ngx_http_internal_redirect(r, uri, &args);
+    if(uri->len != 0 && uri->data[0] == '/') {
+        rc = ngx_http_internal_redirect(r, uri, &args);
+    }
+    else{
+        rc = ngx_http_named_location(r, uri);
+    }
 
     if (rc == NGX_ERROR) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -990,7 +995,7 @@ static ngx_int_t ngx_http_upload_process_chain(ngx_http_upload_ctx_t *u, ngx_cha
             ngx_crc32_update(&u->crc32, buf, len);
 
         if(ulcf->max_file_size != 0) {
-            if(u->output_file.offset + len > ulcf->max_file_size)
+            if(u->output_file.offset + (off_t)len > ulcf->max_file_size)
                 return NGX_UPLOAD_TOOLARGE;
         }
 
