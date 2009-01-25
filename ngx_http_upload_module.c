@@ -102,6 +102,7 @@ typedef struct {
     ngx_array_t       *field_filters;
     ngx_array_t       *cleanup_statuses;
     ngx_flag_t         forward_args;
+    size_t            limit_rate;
 
     unsigned int      md5:1;
     unsigned int      sha1:1;
@@ -153,6 +154,8 @@ typedef struct ngx_http_upload_ctx_s {
     ngx_chain_t         *last;
     ngx_chain_t         *checkpoint;
     size_t              output_body_len;
+    size_t              limit_rate;
+    ssize_t             received;
 
     ngx_pool_cleanup_t          *cln;
 
@@ -419,6 +422,17 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
        offsetof(ngx_http_upload_loc_conf_t, forward_args),
        NULL },
 
+     /*
+      * Specifies request body reception rate limit
+      */
+    { ngx_string("upload_limit_rate"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF
+                        |NGX_CONF_TAKE1,
+      ngx_conf_set_size_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_upload_loc_conf_t, limit_rate),
+      NULL },
+
       ngx_null_command
 }; /* }}} */
 
@@ -569,6 +583,8 @@ ngx_http_upload_handler(ngx_http_request_t *r)
     u->log = r->connection->log;
     u->chain = u->last = u->checkpoint = NULL;
     u->output_body_len = 0;
+    u->limit_rate = ulcf->limit_rate;
+    u->received = 0;
 
     upload_init_ctx(u);
 
@@ -1126,6 +1142,7 @@ ngx_http_upload_create_loc_conf(ngx_conf_t *cf)
     conf->max_header_len = NGX_CONF_UNSET_SIZE;
     conf->max_output_body_len = NGX_CONF_UNSET_SIZE;
     conf->max_file_size = NGX_CONF_UNSET;
+    conf->limit_rate = NGX_CONF_UNSET_SIZE;
 
     /*
      * conf->field_templates,
@@ -1168,6 +1185,8 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_off_value(conf->max_file_size,
                              prev->max_file_size,
                              0);
+
+    ngx_conf_merge_size_value(conf->limit_rate, prev->limit_rate, 0);
 
     if(conf->forward_args == NGX_CONF_UNSET) {
         conf->forward_args = (prev->forward_args != NGX_CONF_UNSET) ?
@@ -1694,6 +1713,8 @@ ngx_http_read_upload_client_request_body(ngx_http_request_t *r) {
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                        "http client request body preread %uz", preread);
 
+        u->received = preread;
+
         b = ngx_calloc_buf(r->pool);
         if (b == NULL) {
             upload_shutdown_ctx(u);
@@ -1817,12 +1838,45 @@ ngx_http_read_upload_client_request_body_handler(ngx_http_request_t *r)
 {
     ngx_int_t  rc;
     ngx_http_upload_ctx_t     *u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
+    ngx_event_t               *rev = r->connection->read;
+    ngx_http_core_loc_conf_t  *clcf;
 
-    if (r->connection->read->timedout) {
-        r->connection->timedout = 1;
-        upload_shutdown_ctx(u);
-        ngx_http_finalize_request(r, NGX_HTTP_REQUEST_TIME_OUT);
-        return;
+    if (rev->timedout) {
+        if(!rev->delayed) {
+            r->connection->timedout = 1;
+            upload_shutdown_ctx(u);
+            ngx_http_finalize_request(r, NGX_HTTP_REQUEST_TIME_OUT);
+            return;
+        }
+
+        rev->timedout = 0;
+        rev->delayed = 0;
+
+        if (!rev->ready) {
+            clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+            ngx_add_timer(rev, clcf->client_body_timeout);
+
+            if (ngx_handle_read_event(rev, clcf->send_lowat) != NGX_OK) {
+                upload_shutdown_ctx(u);
+                ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+            }
+
+            return;
+        }
+    }
+    else{
+        if (r->connection->read->delayed) {
+            clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+            ngx_log_debug0(NGX_LOG_DEBUG_HTTP, rev->log, 0,
+                           "http read delayed");
+
+            if (ngx_handle_read_event(rev, clcf->send_lowat) != NGX_OK) {
+                upload_shutdown_ctx(u);
+                ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+            }
+
+            return;
+        }
     }
 
     rc = ngx_http_do_read_upload_client_request_body(r);
@@ -1836,13 +1890,13 @@ ngx_http_read_upload_client_request_body_handler(ngx_http_request_t *r)
 static ngx_int_t /* {{{ ngx_http_do_read_upload_client_request_body */
 ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
 {
-    size_t                     size;
-    ssize_t                    n;
+    ssize_t                     size, n, limit;
     ngx_connection_t          *c;
     ngx_http_request_body_t   *rb;
     ngx_http_core_loc_conf_t  *clcf;
     ngx_http_upload_ctx_t     *u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
     ngx_int_t                  rc;
+    ngx_msec_t                 delay;
 
     c = r->connection;
     rb = r->request_body;
@@ -1880,6 +1934,22 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
                 size = (size_t)rb->rest;
             }
 
+            if (u->limit_rate) {
+                limit = u->limit_rate * (ngx_time() - r->start_sec + 1) - u->received;
+
+                if (limit < 0) {
+                    c->read->delayed = 1;
+                    ngx_add_timer(c->read,
+                                  (ngx_msec_t) (- limit * 1000 / u->limit_rate + 1));
+
+                    return NGX_AGAIN;
+                }
+
+                if(limit > 0 && size > limit) {
+                    size = limit;
+                }
+            }
+
             n = c->recv(c, rb->buf->last, size);
 
             ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
@@ -1902,6 +1972,7 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
             rb->buf->last += n;
             rb->rest -= n;
             r->request_length += n;
+            u->received += n;
 
             if (rb->rest == 0) {
                 break;
@@ -1909,6 +1980,16 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
 
             if (rb->buf->last < rb->buf->end) {
                 break;
+            }
+
+            if (u->limit_rate) {
+                delay = (ngx_msec_t) (n * 1000 / u->limit_rate + 1);
+
+                if (delay > 0) {
+                    c->read->delayed = 1;
+                    ngx_add_timer(c->read, delay);
+                    return NGX_AGAIN;
+                }
             }
         }
 
