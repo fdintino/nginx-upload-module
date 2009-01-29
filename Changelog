@@ -1,4 +1,8 @@
 
+Version 2.255.1
+ * Change: backported to nginx 0.5.37 by Anthony Kholodkov. upload_file_crc32
+   variable no longer exists in this branch
+
 Version 2.0.8
  * Change: support for named locations
  * Fixed bug: crash on missing Content-Type request header
