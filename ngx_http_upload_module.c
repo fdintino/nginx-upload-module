@@ -2876,6 +2876,11 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
             return NGX_UPLOAD_MALFORMED;
         }
 
+        upload_ctx->content_type = *content_type;
+
+        content_type->data = (u_char*)MULTIPART_FORM_DATA_STRING "; boundary=BLAH";
+        content_type->len = sizeof(MULTIPART_FORM_DATA_STRING "; boundary=BLAH") - 1;
+
         boundary_start_ptr = (u_char*)"BLAH";
         boundary_end_ptr = boundary_start_ptr + 4;
     }
