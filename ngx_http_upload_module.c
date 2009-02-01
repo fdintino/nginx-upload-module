@@ -208,6 +208,7 @@ typedef struct ngx_http_upload_ctx_s {
     unsigned int        prevent_output:1;
     unsigned int        calculate_crc32:1;
     unsigned int        started:1;
+    unsigned int        unencoded:1;
 } ngx_http_upload_ctx_t;
 
 static ngx_int_t ngx_http_upload_handler(ngx_http_request_t *r);
@@ -670,11 +671,6 @@ ngx_http_upload_handler(ngx_http_request_t *r)
     return NGX_DONE;
 } /* }}} */
 
-static ngx_int_t /* {{{ ngx_http_partial_upload_handler */
-ngx_http_partial_upload_handler(ngx_http_request_t *r)
-{
-} /* }}} */
-
 static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
     ngx_http_upload_loc_conf_t  *ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
     ngx_http_upload_ctx_t       *ctx = ngx_http_get_module_ctx(r, ngx_http_upload_module);
@@ -690,7 +686,8 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
         r->headers_out.status = NGX_HTTP_CREATED;
         r->header_only = 1;
         r->headers_out.content_length_n = 0;
-        return ngx_http_send_header(r);
+        ngx_http_finalize_request(r, ngx_http_send_header(r));
+        return NGX_OK;
     }
 
     if(ulcf->max_output_body_len != 0) {
@@ -1435,7 +1432,7 @@ ngx_http_upload_buf_merge_range(ngx_http_upload_merger_state_t *ms, ngx_http_upl
                            range_n->end,
                            range_n->total);
 
-            ms->complete_ranges = (range_n->start == 0) && (range_n->end + 1 == range_n->total) ? 1 : 0;
+            ms->complete_ranges = (range_n->start == 0) && (range_n->end == range_n->total) ? 1 : 0;
 
             ms->found_lower_bound = 1;
         }
@@ -2479,7 +2476,7 @@ ngx_http_process_request_body(ngx_http_request_t *r, ngx_chain_t *body)
             return rc;
 
         // Signal end of body
-        if(body->buf->last_buf) {
+        if(r->request_body->rest == 0) {
             rc = u->data_handler(u, body->buf->pos, body->buf->pos);
 
             if(rc != NGX_OK)
@@ -2738,6 +2735,7 @@ static void upload_init_ctx(ngx_http_upload_ctx_t *upload_ctx) { /* {{{ */
 	upload_ctx->flush_output_buffer_f = ngx_http_upload_flush_output_buffer;
 
     upload_ctx->started = 0;
+    upload_ctx->unencoded = 0;
     /*
      * Set default data handler
      */
@@ -2784,10 +2782,12 @@ static ngx_int_t upload_start(ngx_http_upload_ctx_t *upload_ctx, ngx_http_upload
 } /* }}} */
 
 static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx, ngx_http_headers_in_t *headers_in) { /* {{{ */
-    ngx_str_t                 *content_type;
+    ngx_str_t                 *content_type, s;
     ngx_list_part_t           *part;
     ngx_table_elt_t           *header;
     ngx_uint_t                 i;
+    u_char                    *mime_type_end_ptr;
+    u_char                    *boundary_start_ptr, *boundary_end_ptr;
 
     // Check whether Content-Type header is missing
     if(headers_in->content_type == NULL) {
@@ -2797,18 +2797,6 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
     }
 
     content_type = &headers_in->content_type->value;
-
-    // Find colon in content type string, which terminates mime type
-    u_char *mime_type_end_ptr = (u_char*) ngx_strchr(content_type->data, ';');
-    u_char *boundary_start_ptr, *boundary_end_ptr;
-
-    upload_ctx->boundary.data = 0;
-
-    if(mime_type_end_ptr == NULL) {
-        ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
-                       "no boundary found in Content-Type");
-        return NGX_UPLOAD_MALFORMED;
-    }
 
     if(ngx_strncasecmp(content_type->data, (u_char*) MULTIPART_FORM_DATA_STRING,
         sizeof(MULTIPART_FORM_DATA_STRING) - 1)) {
@@ -2830,43 +2818,61 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
                 i = 0;
             }
 
-            if(!strncasecmp(CONTENT_DISPOSITION_STRING, (char*)header->key.data, sizeof(CONTENT_DISPOSITION_STRING) - 1)) {
-                if(upload_parse_content_disposition(upload_ctx, &header->value)) {
+            if(!strncasecmp(CONTENT_DISPOSITION_STRING, (char*)header[i].key.data, sizeof(CONTENT_DISPOSITION_STRING) - 1 - 1)) {
+                if(upload_parse_content_disposition(upload_ctx, &header[i].value)) {
                     ngx_log_error(NGX_LOG_INFO, upload_ctx->log, 0,
                         "invalid Content-Disposition header");
                     return NGX_ERROR;
                 }
 
-                upload_ctx->partial_content = 1;
                 upload_ctx->is_file = 1;
+                upload_ctx->unencoded = 1;
         
                 upload_ctx->data_handler = upload_process_raw_buf;
-
-                upload_ctx->field_name.data = (u_char*)"<body>";
-                upload_ctx->field_name.len = sizeof("<body>") - 1;
-
-                continue;
-            }
-
-            if(!strncasecmp(SESSION_ID_STRING, (char*)header->key.data, sizeof(SESSION_ID_STRING)-1)) {
-                if(header->value.len == 0) {
+            }else if(!strncasecmp(SESSION_ID_STRING, (char*)header[i].key.data, sizeof(SESSION_ID_STRING) - 1 - 1)) {
+                if(header[i].value.len == 0) {
                     ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
                                    "empty Session-ID in header");
                     return NGX_ERROR;
                 }
 
-                upload_ctx->session_id = header->value;
+                upload_ctx->session_id = header[i].value;
 
                 ngx_log_debug1(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
                                "session id %V", &upload_ctx->session_id);
+            }else if(!strncasecmp(CONTENT_RANGE_STRING, (char*)header[i].key.data, sizeof(CONTENT_RANGE_STRING) - 1 - 1)) {
+                if(header[i].value.len == 0) {
+                    ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                                   "empty Content-Range in part header");
+                    return NGX_ERROR;
+                }
 
-                continue;
+                if(strncasecmp((char*)header[i].value.data, BYTES_UNIT_STRING, sizeof(BYTES_UNIT_STRING) - 1)) {
+                    ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                                   "unsupported range unit");
+                    return NGX_ERROR;
+                }
+
+                s.data = (u_char*)(char*)header[i].value.data + sizeof(BYTES_UNIT_STRING) - 1;
+                s.len = header[i].value.len - sizeof(BYTES_UNIT_STRING) + 1;
+
+                if(ngx_http_upload_parse_range(&s, &upload_ctx->content_range_n) != NGX_OK) {
+                    ngx_log_debug2(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                                   "invalid range %V (%V)", &s, &header[i].value);
+                    return NGX_ERROR;
+                }
+
+                ngx_log_debug3(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                               "partial content, range %O-%O/%O", upload_ctx->content_range_n.start, 
+                               upload_ctx->content_range_n.end, upload_ctx->content_range_n.total);
+
+                upload_ctx->partial_content = 1;
             }
         }
 
-        if(!upload_ctx->partial_content) {
-            ngx_log_debug1(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
-                           "Content-Type is not multipart/form-data and no Content-Disposition header found: %V", content_type);
+        if(!upload_ctx->unencoded) {
+            ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                           "Content-Type is not multipart/form-data and no Content-Disposition header found");
             return NGX_UPLOAD_MALFORMED;
         }
 
@@ -2874,6 +2880,17 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
         boundary_end_ptr = boundary_start_ptr + 4;
     }
     else{
+        // Find colon in content type string, which terminates mime type
+        mime_type_end_ptr = (u_char*) ngx_strchr(content_type->data, ';');
+
+        upload_ctx->boundary.data = 0;
+
+        if(mime_type_end_ptr == NULL) {
+            ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                           "no boundary found in Content-Type");
+            return NGX_UPLOAD_MALFORMED;
+        }
+
         boundary_start_ptr = ngx_strstrn(mime_type_end_ptr, BOUNDARY_STRING, sizeof(BOUNDARY_STRING) - 2);
 
         if(boundary_start_ptr == NULL) {
