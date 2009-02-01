@@ -2845,7 +2845,22 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
                 upload_ctx->field_name.data = (u_char*)"<body>";
                 upload_ctx->field_name.len = sizeof("<body>") - 1;
 
-                break;
+                continue;
+            }
+
+            if(!strncasecmp(SESSION_ID_STRING, (char*)header->key.data, sizeof(SESSION_ID_STRING)-1)) {
+                if(header->value.len == 0) {
+                    ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                                   "empty Session-ID in header");
+                    return NGX_ERROR;
+                }
+
+                upload_ctx->session_id = header->value;
+
+                ngx_log_debug1(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                               "session id %V", &upload_ctx->session_id);
+
+                continue;
             }
         }
 
