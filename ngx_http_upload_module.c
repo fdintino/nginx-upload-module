@@ -1732,7 +1732,7 @@ ngx_http_upload_md5_variable(ngx_http_request_t *r,
 
     u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
 
-    if(u->md5_ctx == NULL) {
+    if(u->md5_ctx == NULL || u->partial_content) {
         v->not_found = 1;
         return NGX_OK;
     }
@@ -1769,7 +1769,7 @@ ngx_http_upload_sha1_variable(ngx_http_request_t *r,
 
     u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
 
-    if(u->sha1_ctx == NULL) {
+    if(u->sha1_ctx == NULL || u->partial_content) {
         v->not_found = 1;
         return NGX_OK;
     }
@@ -1804,6 +1804,11 @@ ngx_http_upload_crc32_variable(ngx_http_request_t *r,
     uint32_t               *value;
 
     u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
+
+    if(u->partial_content) {
+        v->not_found = 1;
+        return NGX_OK;
+    }
 
     value = (uint32_t *) ((char *) u + data);
 
