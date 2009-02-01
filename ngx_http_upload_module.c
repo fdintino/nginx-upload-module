@@ -2365,6 +2365,7 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
     ngx_http_request_body_t   *rb;
     ngx_http_upload_ctx_t     *u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
     ngx_int_t                  rc;
+    ngx_http_core_loc_conf_t  *clcf;
 
     c = r->connection;
     rb = r->request_body;
@@ -2439,6 +2440,17 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
 
         if (rb->rest == 0) {
             break;
+        }
+
+        if (!c->read->ready) {
+            clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+            ngx_add_timer(c->read, clcf->client_body_timeout);
+
+            if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            }
+
+            return NGX_AGAIN;
         }
     }
 
