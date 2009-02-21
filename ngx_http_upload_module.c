@@ -210,6 +210,7 @@ typedef struct ngx_http_upload_ctx_s {
     unsigned int        calculate_crc32:1;
     unsigned int        started:1;
     unsigned int        unencoded:1;
+    unsigned int        part_header:1;
 } ngx_http_upload_ctx_t;
 
 /*
@@ -219,8 +220,8 @@ typedef ngx_int_t (*ngx_http_request_header_handler_pt)
     (struct ngx_http_upload_ctx_s*, ngx_str_t *);
 
 typedef struct {
-    ngx_str_t                               name,
-    ngx_http_request_header_handler_pt      handler
+    ngx_str_t                               name;
+    ngx_http_request_header_handler_pt      handler;
 } ngx_http_upload_header_t;
 
 static ngx_int_t ngx_http_upload_handler(ngx_http_request_t *r);
@@ -2610,14 +2611,14 @@ ngx_http_upload_parse_content_range(ngx_http_upload_ctx_t *u, ngx_str_t *cr)
         return NGX_UPLOAD_MALFORMED;
     }
 
-    if(strncasecmp((char*)header[i].value.data, BYTES_UNIT_STRING, sizeof(BYTES_UNIT_STRING) - 1)) {
+    if(strncasecmp((char*)cr->data, BYTES_UNIT_STRING, sizeof(BYTES_UNIT_STRING) - 1)) {
         ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
                        "unsupported range unit");
         return NGX_ERROR;
     }
 
-    s.data = cr.data + sizeof(BYTES_UNIT_STRING) - 1;
-    s.len = cr.len - sizeof(BYTES_UNIT_STRING) + 1;
+    s.data = cr->data + sizeof(BYTES_UNIT_STRING) - 1;
+    s.len = cr->len - sizeof(BYTES_UNIT_STRING) + 1;
 
     if(ngx_http_upload_parse_range(&s, &u->content_range_n) != NGX_OK) {
         ngx_log_debug2(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
@@ -2660,24 +2661,24 @@ ngx_http_upload_parse_generic_header(ngx_http_upload_ctx_t *u, ngx_str_t *gh)
 
 static ngx_http_upload_header_t ngx_http_upload_headers[] = { /* {{{ ngx_http_upload_headers */
     { ngx_string("Content-Disposition:"), upload_parse_content_disposition },
-    { ngx_string("Content-Range:"), ngx_http_upload_parse_range },
+    { ngx_string("Content-Range:"), ngx_http_upload_parse_content_range },
     { ngx_string("Content-Type:"), ngx_http_upload_parse_generic_header },
     { ngx_string("Session-ID:"), ngx_http_upload_parse_generic_header },
     { ngx_null_string, NULL }
 }; /* }}} */
 
-static ngx_int_t upload_parse_part_header(ngx_http_upload_ctx_t *upload_ctx, char *header, char *header_end) { /* {{{ */
+static ngx_int_t upload_parse_part_header(ngx_http_upload_ctx_t *upload_ctx, u_char *header, u_char *header_end) { /* {{{ */
     ngx_str_t s;
     ngx_http_upload_header_t *h = ngx_http_upload_headers;
     u_char *p;
 
     while(h->name.data != NULL) {
-        if(!strncasecmp(h->name.data, header, h->name.len)) {
+        if(!strncasecmp((char*)h->name.data, (char*)header, h->name.len)) {
             p = header + h->name.len;
 
-            p += strspn(p, " ");
+            p += strspn((char*)p, " ");
 
-            s.data = (u_char*)p;
+            s.data = p;
             s.len = header_end - p;
 
             return h->handler(upload_ctx, &s);
@@ -2807,13 +2808,14 @@ static ngx_int_t upload_start(ngx_http_upload_ctx_t *upload_ctx, ngx_http_upload
 } /* }}} */
 
 static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx, ngx_http_headers_in_t *headers_in) { /* {{{ */
-    ngx_str_t                 *content_type, s;
+    ngx_str_t                 *content_type;
     ngx_list_part_t           *part;
     ngx_table_elt_t           *header;
     ngx_uint_t                 i;
     u_char                    *mime_type_end_ptr;
     u_char                    *boundary_start_ptr, *boundary_end_ptr;
     ngx_http_upload_header_t  *h;
+    ngx_int_t                  rc;
 
     // Check whether Content-Type header is missing
     if(headers_in->content_type == NULL) {
@@ -2847,7 +2849,7 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
             h = ngx_http_upload_headers;
 
             while(h->name.data != NULL) {
-                if(!strncasecmp(h->name.data, header[i].key.data, h->name.len - 1)) {
+                if(!strncasecmp((char*)h->name.data, (char*)header[i].key.data, h->name.len - 1)) {
                     rc = h->handler(upload_ctx, &header[i].value);
 
                     if(rc == NGX_UPLOAD_REMOVE_HEADER) {
@@ -3062,8 +3064,8 @@ static ngx_int_t upload_process_buf(ngx_http_upload_ctx_t *upload_ctx, u_char *s
                         } else {
                             *upload_ctx->header_accumulator_pos = '\0';
 
-                            rc = upload_parse_part_header(upload_ctx, (char*)upload_ctx->header_accumulator,
-                                (char*)upload_ctx->header_accumulator_pos);
+                            rc = upload_parse_part_header(upload_ctx, upload_ctx->header_accumulator,
+                                upload_ctx->header_accumulator_pos);
 
                             if(rc != NGX_OK) {
                                 upload_ctx->state = upload_state_finish;
