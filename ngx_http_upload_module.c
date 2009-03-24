@@ -261,6 +261,12 @@ static char *ngx_http_upload_cleanup(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static void ngx_upload_cleanup_handler(void *data);
 
+#if defined nginx_version && nginx_version >= 0007044
+static ngx_path_init_t        ngx_http_upload_temp_path = {
+    ngx_string(NGX_HTTP_PROXY_TEMP_PATH), { 1, 2, 0 }
+};
+#endif
+
 /*
  * upload_init_ctx
  *
@@ -1588,10 +1594,17 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_str_value(conf->url, prev->url, "");
 
+#if defined nginx_version && nginx_version >= 0007044
+    ngx_conf_merge_path_value(cf,
+                              &conf->store_path,
+                              prev->store_path,
+                              &ngx_http_upload_temp_path);
+#else
     ngx_conf_merge_path_value(conf->store_path,
                               prev->store_path,
                               NGX_HTTP_PROXY_TEMP_PATH, 1, 2, 0,
                               ngx_garbage_collector_temp_handler, cf);
+#endif
 
     ngx_conf_merge_path_value(conf->state_store_path,
                               prev->state_store_path,
