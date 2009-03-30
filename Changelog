@@ -1,4 +1,7 @@
 
+Version 2.0.9
+ * Change: upgrade to nginx's 0.7.46 API
+
 Version 2.0.8
  * Change: support for named locations
  * Fixed bug: crash on missing Content-Type request header
