@@ -164,6 +164,7 @@ typedef struct ngx_http_upload_ctx_s {
     unsigned int        discard_data:1;
     unsigned int        is_file:1;
     unsigned int        calculate_crc32:1;
+    unsigned int        no_content:1;
 } ngx_http_upload_ctx_t;
 
 static ngx_int_t ngx_http_upload_handler(ngx_http_request_t *r);
@@ -569,6 +570,7 @@ ngx_http_upload_handler(ngx_http_request_t *r)
     u->log = r->connection->log;
     u->chain = u->last = u->checkpoint = NULL;
     u->output_body_len = 0;
+    u->no_content = 1;
 
     upload_init_ctx(u);
 
@@ -599,10 +601,19 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
     ngx_str_t                   *uri;
     ngx_buf_t                      *b;
     ngx_chain_t                    *cl;
+    ngx_str_t                   dummy = ngx_string("<ngx_upload_module_dummy>");
 
     if(ulcf->max_output_body_len != 0) {
         if(ctx->output_body_len + ctx->boundary.len + 4 > ulcf->max_output_body_len)
             return NGX_HTTP_REQUEST_ENTITY_TOO_LARGE;
+    }
+
+    if(ctx->no_content) {
+        rc = ngx_http_upload_append_field(ctx, &dummy, &ngx_http_upload_empty_field_value);
+
+        if(rc != NGX_OK) {
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
     }
 
     /*
@@ -705,6 +716,8 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
     ngx_upload_cleanup_t  *ucln;
 
     if(u->is_file) {
+        u->no_content = 0;
+
         u->cln = ngx_pool_cleanup_add(r->pool, sizeof(ngx_upload_cleanup_t));
 
         if(u->cln == NULL)
