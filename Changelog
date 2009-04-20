@@ -1,7 +1,7 @@
 
 Version 2.0.9
- * Change: compatibility with nginx's API 0.7.46 and greater
- * Fixed bug: module directives couldn't appear in limit_except block
+ * Change: compatibility with nginx's API 0.7.52 and greater
+ * Fixed bug: module directives couldn't have appeared in limit_except block
  * Added feature: directive upload_limit_rate and ability to limit upload rate
  * Change: Malformed body issues are now logged to error log instead of debug log
 

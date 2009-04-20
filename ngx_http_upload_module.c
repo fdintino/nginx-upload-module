@@ -6,6 +6,7 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
+#include <nginx.h>
 
 #if (NGX_HAVE_OPENSSL_MD5_H)
 #include <openssl/md5.h>
@@ -212,7 +213,7 @@ static char *ngx_http_upload_cleanup(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static void ngx_upload_cleanup_handler(void *data);
 
-#if defined nginx_version && nginx_version >= 0007044
+#if defined nginx_version && nginx_version >= 7052
 static ngx_path_init_t        ngx_http_upload_temp_path = {
     ngx_string(NGX_HTTP_PROXY_TEMP_PATH), { 1, 2, 0 }
 };
@@ -1181,7 +1182,7 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_str_value(conf->url, prev->url, "");
 
-#if defined nginx_version && nginx_version >= 0007044
+#if defined nginx_version && nginx_version >= 7052
     ngx_conf_merge_path_value(cf,
                               &conf->store_path,
                               prev->store_path,
