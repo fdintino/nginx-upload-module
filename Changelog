@@ -1,4 +1,12 @@
 
+Version 2.0.10
+ * Fixed bug: Prevent module from registering store path if no upload location
+ was configured
+ * Fixed bug: upload corrupted in case of short body + keepalive. Thanks to Dmitry
+ Dedukhin.
+ * Change: Return error 415 instead of 400 if request content type is not
+ multipart/form-data
+
 Version 2.0.9
  * Change: compatibility with nginx's API 0.7.52 and greater
  * Fixed bug: module directives couldn't have appeared in limit_except block
