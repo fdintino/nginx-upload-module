@@ -1184,17 +1184,19 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_str_value(conf->url, prev->url, "");
 
+    if(conf->url.len != 0) {
 #if defined nginx_version && nginx_version >= 7052
-    ngx_conf_merge_path_value(cf,
-                              &conf->store_path,
-                              prev->store_path,
-                              &ngx_http_upload_temp_path);
+        ngx_conf_merge_path_value(cf,
+                                  &conf->store_path,
+                                  prev->store_path,
+                                  &ngx_http_upload_temp_path);
 #else
-    ngx_conf_merge_path_value(conf->store_path,
-                              prev->store_path,
-                              NGX_HTTP_PROXY_TEMP_PATH, 1, 2, 0,
-                              ngx_garbage_collector_temp_handler, cf);
+        ngx_conf_merge_path_value(conf->store_path,
+                                  prev->store_path,
+                                  NGX_HTTP_PROXY_TEMP_PATH, 1, 2, 0,
+                                  ngx_garbage_collector_temp_handler, cf);
 #endif
+    }
 
     ngx_conf_merge_uint_value(conf->store_access,
                               prev->store_access, 0600);
