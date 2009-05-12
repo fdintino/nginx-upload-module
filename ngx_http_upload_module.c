@@ -597,9 +597,11 @@ ngx_http_upload_handler(ngx_http_request_t *r)
 
     upload_init_ctx(u);
 
-    if(upload_parse_content_type(u, &r->headers_in.content_type->value) != NGX_OK) {
+    rc = upload_parse_content_type(u, &r->headers_in.content_type->value);
+
+    if(rc != NGX_OK) {
         upload_shutdown_ctx(u);
-        return NGX_HTTP_BAD_REQUEST;
+        return rc;
     }
 
     if(upload_start(u, ulcf) != NGX_OK)
@@ -2310,14 +2312,14 @@ static ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ng
     if(mime_type_end_ptr == NULL) {
         ngx_log_error(NGX_LOG_ERR, upload_ctx->log, 0,
                        "no boundary found in Content-Type");
-        return NGX_UPLOAD_MALFORMED;
+        return NGX_HTTP_BAD_REQUEST;
     }
 
     if(ngx_strncasecmp(content_type->data, (u_char*) MULTIPART_FORM_DATA_STRING,
         sizeof(MULTIPART_FORM_DATA_STRING) - 1)) {
         ngx_log_error(NGX_LOG_ERR, upload_ctx->log, 0,
                        "Content-Type is not multipart/form-data: %V", content_type);
-        return NGX_UPLOAD_MALFORMED;
+        return NGX_HTTP_UNSUPPORTED_MEDIA_TYPE;
     }
 
     boundary_start_ptr = ngx_strstrn(mime_type_end_ptr, BOUNDARY_STRING, sizeof(BOUNDARY_STRING) - 2);
@@ -2325,7 +2327,7 @@ static ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ng
     if(boundary_start_ptr == NULL) {
         ngx_log_error(NGX_LOG_ERR, upload_ctx->log, 0,
                        "no boundary found in Content-Type");
-        return NGX_UPLOAD_MALFORMED; // No boundary found
+        return NGX_HTTP_BAD_REQUEST; // No boundary found
     }
 
     boundary_start_ptr += sizeof(BOUNDARY_STRING) - 1;
@@ -2334,7 +2336,7 @@ static ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ng
     if(boundary_end_ptr == boundary_start_ptr) {
         ngx_log_error(NGX_LOG_ERR, upload_ctx->log, 0,
                        "boundary is empty");
-        return NGX_UPLOAD_MALFORMED;
+        return NGX_HTTP_BAD_REQUEST;
     }
 
     // Allocate memory for entire boundary plus \r\n-- plus terminating character
@@ -2342,7 +2344,7 @@ static ngx_int_t upload_parse_content_type(ngx_http_upload_ctx_t *upload_ctx, ng
     upload_ctx->boundary.data = ngx_palloc(upload_ctx->request->pool, upload_ctx->boundary.len + 1);
 
     if(upload_ctx->boundary.data == NULL)
-        return NGX_UPLOAD_NOMEM;
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
 
     ngx_cpystrn(upload_ctx->boundary.data + 4, boundary_start_ptr,
         boundary_end_ptr - boundary_start_ptr + 1);
