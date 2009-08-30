@@ -1,5 +1,6 @@
 
 Version 2.0.10
+ * Change: compatibility with nginx API 0.8.11
  * Fixed bug: Prevent module from registering store path if no upload location
  was configured
  * Fixed bug: upload corrupted in case of short body + keepalive. Thanks to Dmitry

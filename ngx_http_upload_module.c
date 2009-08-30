@@ -1710,6 +1710,10 @@ ngx_http_read_upload_client_request_body(ngx_http_request_t *r) {
     ngx_http_core_loc_conf_t  *clcf;
     ngx_http_upload_ctx_t     *u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
 
+#if defined nginx_version && nginx_version >= 8011
+    r->main->count++;
+#endif
+
     if (r->request_body || r->discard_body) {
         return NGX_OK;
     }
