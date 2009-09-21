@@ -1770,6 +1770,7 @@ ngx_http_read_upload_client_request_body(ngx_http_request_t *r) {
 
         rb->bufs->buf = b;
         rb->bufs->next = NULL;
+        rb->buf = b;
 
         if (preread >= r->headers_in.content_length_n) {
 
