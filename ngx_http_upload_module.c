@@ -741,8 +741,6 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
     ngx_upload_cleanup_t  *ucln;
 
     if(u->is_file) {
-        u->no_content = 0;
-
         u->cln = ngx_pool_cleanup_add(r->pool, sizeof(ngx_upload_cleanup_t));
 
         if(u->cln == NULL)
@@ -875,7 +873,7 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
 
         if(pass_field && u->field_name.len > 0) { 
             /*
-             * Here we do a small hack: the content of a normal field
+             * Here we do a small hack: the content of a non-file field
              * is not known until ngx_http_upload_flush_output_buffer
              * is called. We pass empty field value to simplify things.
              */
@@ -1142,6 +1140,8 @@ ngx_http_upload_append_field(ngx_http_upload_ctx_t *u, ngx_str_t *name, ngx_str_
             + ngx_upload_field_part2.len + value->len;
 
         u->first_part = 0;
+
+        u->no_content = 0;
     }
 
     return NGX_OK;
