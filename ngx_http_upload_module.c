@@ -138,6 +138,8 @@ typedef struct ngx_http_upload_ctx_s {
     ngx_str_t           file_name;
     ngx_str_t           content_type;
 
+    ngx_uint_t          ordinal;
+
     u_char              *output_buffer;
     u_char              *output_buffer_end;
     u_char              *output_buffer_pos;
@@ -187,6 +189,8 @@ static ngx_int_t ngx_http_upload_sha1_variable(ngx_http_request_t *r,
 static ngx_int_t ngx_http_upload_file_size_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data);
 static ngx_int_t ngx_http_upload_crc32_variable(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data);
+static ngx_int_t ngx_http_upload_uint_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data);
 static char *ngx_http_upload_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
@@ -487,6 +491,10 @@ static ngx_http_variable_t  ngx_http_upload_variables[] = { /* {{{ */
       (uintptr_t) offsetof(ngx_http_upload_ctx_t, file_name),
       NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH, 0 },
 
+    { ngx_string("upload_file_number"), NULL, ngx_http_upload_uint_variable,
+      (uintptr_t) offsetof(ngx_http_upload_ctx_t, ordinal),
+      NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH, 0 },
+
     { ngx_string("upload_tmp_path"), NULL, ngx_http_upload_variable,
       (uintptr_t) offsetof(ngx_http_upload_ctx_t, output_file.name),
       NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH, 0 },
@@ -594,6 +602,7 @@ ngx_http_upload_handler(ngx_http_request_t *r)
     u->no_content = 1;
     u->limit_rate = ulcf->limit_rate;
     u->received = 0;
+    u->ordinal = 0;
 
     upload_init_ctx(u);
 
@@ -741,6 +750,8 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
     ngx_upload_cleanup_t  *ucln;
 
     if(u->is_file) {
+        u->ordinal++;
+
         u->cln = ngx_pool_cleanup_add(r->pool, sizeof(ngx_upload_cleanup_t));
 
         if(u->cln == NULL)
@@ -1422,6 +1433,32 @@ ngx_http_upload_file_size_variable(ngx_http_request_t *r,
     }
 
     v->len = ngx_sprintf(p, "%O", *value) - p;
+    v->valid = 1;
+    v->no_cacheable = 0;
+    v->not_found = 0;
+    v->data = p;
+
+    return NGX_OK;
+} /* }}} */
+
+static ngx_int_t /* {{{ ngx_http_upload_uint_variable */
+ngx_http_upload_uint_variable(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v,  uintptr_t data)
+{
+    ngx_http_upload_ctx_t  *u;
+    u_char                 *p;
+    ngx_uint_t             *value;
+
+    u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
+
+    value = (ngx_uint_t *) ((char *) u + data);
+
+    p = ngx_palloc(r->pool, sizeof("18446744073709551616") - 1);
+    if (p == NULL) {
+        return NGX_ERROR;
+    }
+
+    v->len = ngx_sprintf(p, "%ui", *value) - p;
     v->valid = 1;
     v->no_cacheable = 0;
     v->not_found = 0;

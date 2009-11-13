@@ -2,6 +2,8 @@
 Version 2.0.11
  * Fixed bug: rb->buf was uninitiazlied at some execution paths. Found by Andrew Filonov.
  * Fixed bug: dummy field would not appear whenever form contains only non-file fields.
+ * Added feature: variable $upload_file_number which indicates ordinal number
+ of file in request
 
 Version 2.0.10
  * Change: compatibility with nginx API 0.8.11
