@@ -4,6 +4,7 @@ Version 2.0.11
  * Fixed bug: dummy field would not appear whenever form contains only non-file fields.
  * Added feature: variable $upload_file_number which indicates ordinal number
  of file in request
+ * Change: compatibility with nginx API 0.8.25 and greater
 
 Version 2.0.10
  * Change: compatibility with nginx API 0.8.11
