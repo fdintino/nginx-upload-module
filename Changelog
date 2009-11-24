@@ -1,4 +1,7 @@
 
+Version 2.0.12
+ * Fixed bug: keepalive connection was hanging after upload has been completed.
+
 Version 2.0.11
  * Fixed bug: rb->buf was uninitiazlied at some execution paths. Found by Andrew Filonov.
  * Fixed bug: dummy field would not appear whenever form contains only non-file fields.
