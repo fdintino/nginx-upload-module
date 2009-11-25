@@ -1,6 +1,7 @@
 
 Version 2.0.12
  * Fixed bug: keepalive connection was hanging after upload has been completed.
+ * Change: if request method is not POST return HTTP 405 in order to simplify configuration.
 
 Version 2.0.11
  * Fixed bug: rb->buf was uninitiazlied at some execution paths. Found by Andrew Filonov.

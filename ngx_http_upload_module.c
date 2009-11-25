@@ -551,7 +551,7 @@ ngx_http_upload_handler(ngx_http_request_t *r)
     ngx_int_t                 rc;
 
     if (!(r->method & NGX_HTTP_POST))
-        return NGX_DECLINED;
+        return NGX_HTTP_NOT_ALLOWED;
 
     ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
 
