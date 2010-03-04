@@ -626,11 +626,6 @@ static ngx_str_t  ngx_upload_field_part2 = { /* {{{ */
     (u_char*)"\"" CRLF CRLF
 }; /* }}} */
 
-//static ngx_str_t  ngx_upload_content_range = { /* {{{ */
-//    sizeof(CONTENT_DISPOSITION_STRING) - 2,
-//    (u_char*)CONTENT_DISPOSITION_STRING
-//}; /* }}} */
-
 static ngx_int_t /* {{{ ngx_http_upload_handler */
 ngx_http_upload_handler(ngx_http_request_t *r)
 {
