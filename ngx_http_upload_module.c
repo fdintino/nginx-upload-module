@@ -2805,6 +2805,7 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
     ngx_uint_t                 i;
     u_char                    *mime_type_end_ptr;
     u_char                    *boundary_start_ptr, *boundary_end_ptr;
+    ngx_atomic_uint_t          boundary;
 
     // Check whether Content-Type header is missing
     if(headers_in->content_type == NULL) {
@@ -2895,11 +2896,25 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
 
         upload_ctx->content_type = *content_type;
 
-        content_type->data = (u_char*)MULTIPART_FORM_DATA_STRING "; boundary=BLAH";
-        content_type->len = sizeof(MULTIPART_FORM_DATA_STRING "; boundary=BLAH") - 1;
+        boundary = ngx_next_temp_number(0);
 
-        boundary_start_ptr = (u_char*)"BLAH";
-        boundary_end_ptr = boundary_start_ptr + 4;
+        content_type->data =
+            ngx_pnalloc(upload_ctx->request->pool,
+                        sizeof(MULTIPART_FORM_DATA_STRING "; boundary=") - 1
+                        + NGX_ATOMIC_T_LEN);
+
+        if (content_type->data == NULL) {
+            return NGX_ERROR;
+        }
+
+        content_type->len =
+                       ngx_sprintf(content_type->data,
+                                   MULTIPART_FORM_DATA_STRING "; boundary=%0muA",
+                                   boundary)
+                       - content_type->data;
+
+        boundary_start_ptr = content_type->data + sizeof(MULTIPART_FORM_DATA_STRING "; boundary=") - 1;
+        boundary_end_ptr = content_type->data + content_type->len;
     }
     else{
         // Find colon in content type string, which terminates mime type
