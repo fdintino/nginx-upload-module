@@ -659,7 +659,6 @@ ngx_http_upload_handler(ngx_http_request_t *r)
     u->chain = u->last = u->checkpoint = NULL;
     u->output_body_len = 0;
     u->prevent_output = 0;
-    u->part_header = 0;
 
     upload_init_ctx(u);
 
@@ -2668,12 +2667,10 @@ static ngx_http_upload_header_t ngx_http_upload_headers[] = { /* {{{ ngx_http_up
     { ngx_null_string, NULL }
 }; /* }}} */
 
-static ngx_int_t upload_parse_part_header(ngx_http_upload_ctx_t *u, u_char *header, u_char *header_end) { /* {{{ */
+static ngx_int_t upload_parse_part_header(ngx_http_upload_ctx_t *upload_ctx, u_char *header, u_char *header_end) { /* {{{ */
     ngx_str_t s;
     ngx_http_upload_header_t *h = ngx_http_upload_headers;
     u_char *p;
-
-    u->part_header = 1;
 
     while(h->name.data != NULL) {
         if(!strncasecmp((char*)h->name.data, (char*)header, h->name.len)) {
@@ -2684,7 +2681,7 @@ static ngx_int_t upload_parse_part_header(ngx_http_upload_ctx_t *u, u_char *head
             s.data = p;
             s.len = header_end - p;
 
-            return h->handler(u, &s);
+            return h->handler(upload_ctx, &s);
         }
 
         h++;
