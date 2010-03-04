@@ -1963,7 +1963,7 @@ ngx_http_upload_content_range_variable(ngx_http_request_t *r,
 
     value = (ngx_http_upload_range_t *) ((char *) u + data);
 
-    p = ngx_palloc(r->pool, 3*NGX_OFF_T_LEN + 2);
+    p = ngx_palloc(r->pool, sizeof("bytes ") - 1 + 3*NGX_OFF_T_LEN + 2);
     if (p == NULL) {
         return NGX_ERROR;
     }
