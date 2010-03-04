@@ -1,4 +1,30 @@
 
+Version 2.0.12
+ * Fixed bug: keepalive connection was hanging after upload has been completed.
+ * Change: if request method is not POST return HTTP 405 in order to simplify configuration.
+
+Version 2.0.11
+ * Fixed bug: rb->buf was uninitiazlied at some execution paths. Found by Andrew Filonov.
+ * Fixed bug: dummy field would not appear whenever form contains only non-file fields.
+ * Added feature: variable $upload_file_number which indicates ordinal number
+ of file in request
+ * Change: compatibility with nginx API 0.8.25 and greater
+
+Version 2.0.10
+ * Change: compatibility with nginx API 0.8.11
+ * Fixed bug: Prevent module from registering store path if no upload location
+ was configured
+ * Fixed bug: upload corrupted in case of short body + keepalive. Thanks to Dmitry
+ Dedukhin.
+ * Change: Return error 415 instead of 400 if request content type is not
+ multipart/form-data
+
+Version 2.0.9
+ * Change: compatibility with nginx's API 0.7.52 and greater
+ * Fixed bug: module directives couldn't have appeared in limit_except block
+ * Added feature: directive upload_limit_rate and ability to limit upload rate
+ * Change: Malformed body issues are now logged to error log instead of debug log
+
 Version 2.0.8
  * Change: support for named locations
  * Fixed bug: crash on missing Content-Type request header
