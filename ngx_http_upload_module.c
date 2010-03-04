@@ -681,8 +681,6 @@ ngx_http_upload_handler(ngx_http_request_t *r)
     u->chain = u->last = u->checkpoint = NULL;
     u->output_body_len = 0;
 
-    upload_init_ctx(u);
-
     u->prevent_output = 0;
     u->no_content = 1;
     u->limit_rate = ulcf->limit_rate;
