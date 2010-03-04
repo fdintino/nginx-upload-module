@@ -2750,9 +2750,9 @@ static ngx_int_t upload_parse_content_disposition(ngx_http_upload_ctx_t *upload_
         if(fieldname_start != filename_start) {
             fieldname_end = fieldname_start + strcspn(fieldname_start, "\"");
 
-            if(*filename_end != '\"') {
+            if(*fieldname_end != '\"') {
                 ngx_log_error(NGX_LOG_ERR, upload_ctx->log, 0,
-                               "malformed filename in part header");
+                               "malformed fieldname in part header");
                 return NGX_UPLOAD_MALFORMED;
             }
 
