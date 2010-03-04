@@ -2695,7 +2695,9 @@ ngx_http_process_request_body(ngx_http_request_t *r, ngx_chain_t *body)
 static ngx_int_t upload_parse_content_disposition(ngx_http_upload_ctx_t *upload_ctx, ngx_str_t *content_disposition) { /* {{{ */
     char *filename_start, *filename_end;
     char *fieldname_start, *fieldname_end;
-    char *p = (char*)content_disposition->data;
+    char *p, *q;
+
+    p = (char*)content_disposition->data;
 
     if(strncasecmp(FORM_DATA_STRING, p, sizeof(FORM_DATA_STRING)-1) && 
             strncasecmp(ATTACHMENT_STRING, p, sizeof(ATTACHMENT_STRING)-1)) {
@@ -2707,7 +2709,6 @@ static ngx_int_t upload_parse_content_disposition(ngx_http_upload_ctx_t *upload_
     filename_start = strstr(p, FILENAME_STRING);
 
     if(filename_start != 0) {
-        char *q;
         
         filename_start += sizeof(FILENAME_STRING)-1;
 
