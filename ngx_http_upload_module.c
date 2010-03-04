@@ -42,7 +42,6 @@
 #define NGX_UPLOAD_IOERROR      -3
 #define NGX_UPLOAD_SCRIPTERROR  -4
 #define NGX_UPLOAD_TOOLARGE     -5
-#define NGX_UPLOAD_REMOVE_HEADER     -6
 
 /*
  * State of multipart/form-data parser
@@ -211,17 +210,6 @@ typedef struct ngx_http_upload_ctx_s {
     unsigned int        started:1;
     unsigned int        unencoded:1;
 } ngx_http_upload_ctx_t;
-
-/*
- * Request and part header handler
- */
-typedef ngx_int_t (*ngx_http_request_header_handler_pt)
-    (struct ngx_http_upload_ctx_s*, ngx_str_t *);
-
-typedef struct {
-    ngx_str_t                               name,
-    ngx_http_request_header_handler_pt      handler
-} ngx_http_upload_header_t;
 
 static ngx_int_t ngx_http_upload_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r);
@@ -607,6 +595,11 @@ static ngx_str_t  ngx_upload_field_part2 = { /* {{{ */
     sizeof("\"" CRLF CRLF) - 1,
     (u_char*)"\"" CRLF CRLF
 }; /* }}} */
+
+//static ngx_str_t  ngx_upload_content_range = { /* {{{ */
+//    sizeof(CONTENT_DISPOSITION_STRING) - 2,
+//    (u_char*)CONTENT_DISPOSITION_STRING
+//}; /* }}} */
 
 static ngx_int_t /* {{{ ngx_http_upload_handler */
 ngx_http_upload_handler(ngx_http_request_t *r)
@@ -1158,8 +1151,8 @@ static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u, u
             if(u->output_file.offset > u->content_range_n.end)
                 return NGX_OK;
 
-            if(u->output_file.offset + (off_t)len > u->content_range_n.end)
-                len = u->content_range_n.end - u->output_file.offset;
+            if(u->output_file.offset + (off_t)len > u->content_range_n.end + 1)
+                len = u->content_range_n.end - u->output_file.offset + 1;
         }
 
         if(u->md5_ctx)
@@ -2513,14 +2506,14 @@ ngx_http_process_request_body(ngx_http_request_t *r, ngx_chain_t *body)
     return NGX_OK;
 } /* }}} */
 
-static ngx_int_t upload_parse_content_disposition(ngx_http_upload_ctx_t *u, ngx_str_t *cd) { /* {{{ */
+static ngx_int_t upload_parse_content_disposition(ngx_http_upload_ctx_t *upload_ctx, ngx_str_t *content_disposition) { /* {{{ */
     char *filename_start, *filename_end;
     char *fieldname_start, *fieldname_end;
-    char *p = (char*)cd->data;
+    char *p = (char*)content_disposition->data;
 
     if(strncasecmp(FORM_DATA_STRING, p, sizeof(FORM_DATA_STRING)-1) && 
             strncasecmp(ATTACHMENT_STRING, p, sizeof(ATTACHMENT_STRING)-1)) {
-        ngx_log_debug0(NGX_LOG_DEBUG_CORE, u->log, 0,
+        ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
                        "Content-Disposition is not form-data or attachment");
         return NGX_UPLOAD_MALFORMED;
     }
@@ -2535,7 +2528,7 @@ static ngx_int_t upload_parse_content_disposition(ngx_http_upload_ctx_t *u, ngx_
         filename_end = filename_start + strcspn(filename_start, "\"");
 
         if(*filename_end != '\"') {
-            ngx_log_debug0(NGX_LOG_DEBUG_CORE, u->log, 0,
+            ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
                            "malformed filename in part header");
             return NGX_UPLOAD_MALFORMED;
         }
@@ -2550,13 +2543,13 @@ static ngx_int_t upload_parse_content_disposition(ngx_http_upload_ctx_t *u, ngx_
                 break;
             }
 
-        u->file_name.len = filename_end - filename_start;
-        u->file_name.data = ngx_palloc(u->request->pool, u->file_name.len + 1);
+        upload_ctx->file_name.len = filename_end - filename_start;
+        upload_ctx->file_name.data = ngx_palloc(upload_ctx->request->pool, upload_ctx->file_name.len + 1);
         
-        if(u->file_name.data == NULL)
+        if(upload_ctx->file_name.data == NULL)
             return NGX_UPLOAD_NOMEM;
 
-        strncpy((char*)u->file_name.data, filename_start, filename_end - filename_start);
+        strncpy((char*)upload_ctx->file_name.data, filename_start, filename_end - filename_start);
     }
 
     fieldname_start = p;
@@ -2572,118 +2565,117 @@ static ngx_int_t upload_parse_content_disposition(ngx_http_upload_ctx_t *u, ngx_
             fieldname_end = fieldname_start + strcspn(fieldname_start, "\"");
 
             if(*fieldname_end != '\"') {
-                ngx_log_debug0(NGX_LOG_DEBUG_CORE, u->log, 0,
+                ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
                                "malformed fieldname in part header");
                 return NGX_UPLOAD_MALFORMED;
             }
 
-            u->field_name.len = fieldname_end - fieldname_start;
-            u->field_name.data = ngx_pcalloc(u->request->pool, u->field_name.len + 1);
+            upload_ctx->field_name.len = fieldname_end - fieldname_start;
+            upload_ctx->field_name.data = ngx_pcalloc(upload_ctx->request->pool, upload_ctx->field_name.len + 1);
 
-            if(u->field_name.data == NULL)
+            if(upload_ctx->field_name.data == NULL)
                 return NGX_UPLOAD_NOMEM;
 
-            strncpy((char*)u->field_name.data, fieldname_start, fieldname_end - fieldname_start);
+            strncpy((char*)upload_ctx->field_name.data, fieldname_start, fieldname_end - fieldname_start);
         }
-    }
-
-    if(!u->part_header) {
-        u->is_file = 1;
-        u->unencoded = 1;
-
-        u->data_handler = upload_process_raw_buf;
     }
 
     return NGX_OK;
 } /* }}} */
 
-static ngx_int_t /* {{{ ngx_http_upload_parse_content_range */
-ngx_http_upload_parse_content_range(ngx_http_upload_ctx_t *u, ngx_str_t *cr)
-{
-    ngx_str_t s;
-
-    if(u->content_range_n.total != 0) {
-        return NGX_OK;
-    }
-
-    if(cr->len == 0) {
-        return NGX_UPLOAD_MALFORMED;
-    }
-
-    if(strncasecmp((char*)header[i].value.data, BYTES_UNIT_STRING, sizeof(BYTES_UNIT_STRING) - 1)) {
-        ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
-                       "unsupported range unit");
-        return NGX_ERROR;
-    }
-
-    s.data = cr.data + sizeof(BYTES_UNIT_STRING) - 1;
-    s.len = cr.len - sizeof(BYTES_UNIT_STRING) + 1;
-
-    if(ngx_http_upload_parse_range(&s, &u->content_range_n) != NGX_OK) {
-        ngx_log_debug2(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
-                       "invalid range %V (%V)", &s, &u->content_range);
-        return NGX_UPLOAD_MALFORMED;
-    }
-
-    ngx_log_debug3(NGX_LOG_DEBUG_CORE, u->log, 0,
-                   "partial content, range %O-%O/%O", u->content_range_n.start, 
-                   u->content_range_n.end, u->content_range_n.total);
-
-    u->partial_content = 1;
-
-    return NGX_OK;
-}
-
-static ngx_int_t /* {{{ ngx_http_upload_parse_generic_header */
-ngx_http_upload_parse_generic_header(ngx_http_upload_ctx_t *u, ngx_str_t *gh)
-{
-    if(u->content_type.data != NULL) {
-        return NGX_OK;
-    }
-
-    if(gh->len == 0) {
-        ngx_log_debug0(NGX_LOG_DEBUG_CORE, u->log, 0,
-                       "empty Content-Type header");
-        return NGX_UPLOAD_MALFORMED;
-    }
-
-    u->content_type.data = ngx_pcalloc(u->request->pool, u->content_type.len);
-    
-    if(u->content_type.data == NULL) {
-        return NGX_UPLOAD_NOMEM;
-    }
-
-    (void)ngx_cpystrn(u->content_type.data, gh->data, gh->len);
-
-    return NGX_OK;
-}
-
-static ngx_http_upload_header_t ngx_http_upload_headers[] = { /* {{{ ngx_http_upload_headers */
-    { ngx_string("Content-Disposition:"), upload_parse_content_disposition },
-    { ngx_string("Content-Range:"), ngx_http_upload_parse_range },
-    { ngx_string("Content-Type:"), ngx_http_upload_parse_generic_header },
-    { ngx_string("Session-ID:"), ngx_http_upload_parse_generic_header },
-    { ngx_null_string, NULL }
-}; /* }}} */
-
 static ngx_int_t upload_parse_part_header(ngx_http_upload_ctx_t *upload_ctx, char *header, char *header_end) { /* {{{ */
     ngx_str_t s;
-    ngx_http_upload_header_t *h = ngx_http_upload_headers;
-    u_char *p;
 
-    while(h->name.data != NULL) {
-        if(!strncasecmp(h->name.data, header, h->name.len)) {
-            p = header + h->name.len;
+    if(!strncasecmp(CONTENT_DISPOSITION_STRING, header, sizeof(CONTENT_DISPOSITION_STRING) - 1)) {
+        char *p = header + sizeof(CONTENT_DISPOSITION_STRING) - 1;
 
-            p += strspn(p, " ");
+        p += strspn(p, " ");
+        
+        s.data = (u_char*)p;
+        s.len = header_end - p;
 
-            s.data = (u_char*)p;
-            s.len = header_end - p;
-
-            return h->handler(upload_ctx, &s);
+        if(upload_parse_content_disposition(upload_ctx, &s) != NGX_OK) {
+            ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                           "invalid Content-Disposition header");
+            return NGX_UPLOAD_MALFORMED;
+        }
+    }
+    else if(!strncasecmp(CONTENT_TYPE_STRING, header, sizeof(CONTENT_TYPE_STRING)-1)) {
+        char *content_type_str = header + sizeof(CONTENT_TYPE_STRING)-1;
+        
+        content_type_str += strspn(content_type_str, " ");
+        upload_ctx->content_type.len = header_end - content_type_str;
+        
+        if(upload_ctx->content_type.len == 0) {
+            ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                           "empty Content-Type in part header");
+            return NGX_UPLOAD_MALFORMED; // Empty Content-Type field
         }
 
-        h++;
+        upload_ctx->content_type.data = ngx_pcalloc(upload_ctx->request->pool, upload_ctx->content_type.len + 1);
+        
+        if(upload_ctx->content_type.data == NULL)
+            return NGX_UPLOAD_NOMEM; // Unable to allocate memory for string
+
+        strncpy((char*)upload_ctx->content_type.data, content_type_str, upload_ctx->content_type.len);
+    }
+    else if(!strncasecmp(CONTENT_RANGE_STRING, header, sizeof(CONTENT_RANGE_STRING)-1)) {
+        char *content_range_str = header + sizeof(CONTENT_RANGE_STRING)-1;
+        
+        content_range_str += strspn(content_range_str, " ");
+
+        upload_ctx->content_range.data = (u_char*)content_range_str;
+        upload_ctx->content_range.len = header_end - content_range_str;
+        
+        if(upload_ctx->content_range.len == 0) {
+            ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                           "empty Content-Range in part header");
+            return NGX_UPLOAD_MALFORMED; // Empty Content-Range field
+        }
+
+        if(strncasecmp(content_range_str, BYTES_UNIT_STRING, sizeof(BYTES_UNIT_STRING) - 1)) {
+            ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                           "unsupported range unit");
+            return NGX_UPLOAD_MALFORMED;
+        }
+
+        s.data = (u_char*)content_range_str + sizeof(BYTES_UNIT_STRING) - 1;
+        s.len = upload_ctx->content_range.len - sizeof(BYTES_UNIT_STRING) + 1;
+
+        if(ngx_http_upload_parse_range(&s, &upload_ctx->content_range_n) != NGX_OK) {
+            ngx_log_debug2(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                           "invalid range %V (%V)", &s, &upload_ctx->content_range);
+            return NGX_UPLOAD_MALFORMED;
+        }
+
+        ngx_log_debug3(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                       "partial content, range %O-%O/%O", upload_ctx->content_range_n.start, 
+                       upload_ctx->content_range_n.end, upload_ctx->content_range_n.total);
+
+        upload_ctx->partial_content = 1;
+    }
+    else if(!strncasecmp(SESSION_ID_STRING, header, sizeof(SESSION_ID_STRING)-1)) {
+        char *session_id_str = header + sizeof(SESSION_ID_STRING)-1;
+        
+        session_id_str += strspn(session_id_str, " ");
+
+        if(session_id_str == header_end) {
+            ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                           "empty Session-ID in part header");
+            return NGX_UPLOAD_MALFORMED;
+        }
+
+        upload_ctx->session_id.data = ngx_pcalloc(upload_ctx->request->pool, header_end - session_id_str);
+        
+        if(upload_ctx->session_id.data == NULL)
+            return NGX_UPLOAD_NOMEM;
+
+        strncpy((char*)upload_ctx->session_id.data, session_id_str, header_end - session_id_str);
+
+        upload_ctx->session_id.len = header_end - session_id_str;
+
+        ngx_log_debug1(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                       "session id %V", &upload_ctx->session_id);
     }
 
     return NGX_OK;
@@ -2813,7 +2805,6 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
     ngx_uint_t                 i;
     u_char                    *mime_type_end_ptr;
     u_char                    *boundary_start_ptr, *boundary_end_ptr;
-    ngx_http_upload_header_t  *h;
 
     // Check whether Content-Type header is missing
     if(headers_in->content_type == NULL) {
@@ -2844,22 +2835,55 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
                 i = 0;
             }
 
-            h = ngx_http_upload_headers;
-
-            while(h->name.data != NULL) {
-                if(!strncasecmp(h->name.data, header[i].key.data, h->name.len - 1)) {
-                    rc = h->handler(upload_ctx, &header[i].value);
-
-                    if(rc == NGX_UPLOAD_REMOVE_HEADER) {
-                        header[i].hash = 0;
-                    }
-
-                    if(rc != NGX_OK) {
-                        return rc;
-                    }
+            if(!strncasecmp(CONTENT_DISPOSITION_STRING, (char*)header[i].key.data, sizeof(CONTENT_DISPOSITION_STRING) - 1 - 1)) {
+                if(upload_parse_content_disposition(upload_ctx, &header[i].value)) {
+                    ngx_log_error(NGX_LOG_INFO, upload_ctx->log, 0,
+                        "invalid Content-Disposition header");
+                    return NGX_ERROR;
                 }
 
-                h++;
+                upload_ctx->is_file = 1;
+                upload_ctx->unencoded = 1;
+        
+                upload_ctx->data_handler = upload_process_raw_buf;
+            }else if(!strncasecmp(SESSION_ID_STRING, (char*)header[i].key.data, sizeof(SESSION_ID_STRING) - 1 - 1)) {
+                if(header[i].value.len == 0) {
+                    ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                                   "empty Session-ID in header");
+                    return NGX_ERROR;
+                }
+
+                upload_ctx->session_id = header[i].value;
+
+                ngx_log_debug1(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                               "session id %V", &upload_ctx->session_id);
+            }else if(!strncasecmp(CONTENT_RANGE_STRING, (char*)header[i].key.data, sizeof(CONTENT_RANGE_STRING) - 1 - 1)) {
+                if(header[i].value.len == 0) {
+                    ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                                   "empty Content-Range in part header");
+                    return NGX_ERROR;
+                }
+
+                if(strncasecmp((char*)header[i].value.data, BYTES_UNIT_STRING, sizeof(BYTES_UNIT_STRING) - 1)) {
+                    ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                                   "unsupported range unit");
+                    return NGX_ERROR;
+                }
+
+                s.data = (u_char*)(char*)header[i].value.data + sizeof(BYTES_UNIT_STRING) - 1;
+                s.len = header[i].value.len - sizeof(BYTES_UNIT_STRING) + 1;
+
+                if(ngx_http_upload_parse_range(&s, &upload_ctx->content_range_n) != NGX_OK) {
+                    ngx_log_debug2(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                                   "invalid range %V (%V)", &s, &header[i].value);
+                    return NGX_ERROR;
+                }
+
+                ngx_log_debug3(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                               "partial content, range %O-%O/%O", upload_ctx->content_range_n.start, 
+                               upload_ctx->content_range_n.end, upload_ctx->content_range_n.total);
+
+                upload_ctx->partial_content = 1;
             }
         }
 
@@ -2940,6 +2964,9 @@ ngx_http_upload_parse_range(ngx_str_t *range, ngx_http_upload_range_t *range_n)
     u_char *p = range->data;
     u_char *last = range->data + range->len;
     off_t  *field = &range_n->start;
+
+    if(range_n == NULL)
+        return NGX_ERROR;
 
     do{
         *field = 0;
