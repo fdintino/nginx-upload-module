@@ -1169,16 +1169,18 @@ static void ngx_http_upload_abort_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
 
         ngx_close_file(u->output_file.fd);
 
-        if(ngx_delete_file(u->output_file.name.data) == NGX_FILE_ERROR) { 
-            ngx_log_error(NGX_LOG_ERR, u->log, ngx_errno
-                , "aborted uploading file \"%V\" to \"%V\", failed to remove destination file"
-                , &u->file_name
-                , &u->output_file.name);
-        } else {
-            ngx_log_error(NGX_LOG_ALERT, u->log, 0
-                , "aborted uploading file \"%V\" to \"%V\", dest file removed"
-                , &u->file_name
-                , &u->output_file.name);
+        if(!u->partial_content) {
+            if(ngx_delete_file(u->output_file.name.data) == NGX_FILE_ERROR) { 
+                ngx_log_error(NGX_LOG_ERR, u->log, ngx_errno
+                    , "aborted uploading file \"%V\" to \"%V\", failed to remove destination file"
+                    , &u->file_name
+                    , &u->output_file.name);
+            } else {
+                ngx_log_error(NGX_LOG_ALERT, u->log, 0
+                    , "aborted uploading file \"%V\" to \"%V\", dest file removed"
+                    , &u->file_name
+                    , &u->output_file.name);
+            }
         }
     }
 
