@@ -1486,7 +1486,7 @@ ngx_http_upload_buf_merge_range(ngx_http_upload_merger_state_t *ms, ngx_http_upl
                            range_n->end,
                            range_n->total);
 
-            ms->complete_ranges = (range_n->start == 0) && (range_n->end == range_n->total) ? 1 : 0;
+            ms->complete_ranges = (range_n->start == 0) && (range_n->end == range_n->total - 1) ? 1 : 0;
 
             ms->found_lower_bound = 1;
         }
