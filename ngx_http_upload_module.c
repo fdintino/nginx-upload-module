@@ -31,6 +31,7 @@
 #define CONTENT_DISPOSITION_STRING              "Content-Disposition:"
 #define CONTENT_TYPE_STRING                     "Content-Type:"
 #define CONTENT_RANGE_STRING                    "Content-Range:"
+#define X_CONTENT_RANGE_STRING                  "X-Content-Range:"
 #define SESSION_ID_STRING                       "Session-ID:"
 #define FORM_DATA_STRING                        "form-data"
 #define ATTACHMENT_STRING                       "attachment"
@@ -3047,7 +3048,9 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
 
                 ngx_log_debug1(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
                                "session id %V", &upload_ctx->session_id);
-            }else if(!strncasecmp(CONTENT_RANGE_STRING, (char*)header[i].key.data, sizeof(CONTENT_RANGE_STRING) - 1 - 1)) {
+            }else if(!strncasecmp(CONTENT_RANGE_STRING, (char*)header[i].key.data, sizeof(CONTENT_RANGE_STRING) - 1 - 1) 
+                || !strncasecmp(X_CONTENT_RANGE_STRING, (char*)header[i].key.data, sizeof(X_CONTENT_RANGE_STRING) - 1 - 1))
+            {
                 if(header[i].value.len == 0) {
                     ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
                                    "empty Content-Range in part header");
