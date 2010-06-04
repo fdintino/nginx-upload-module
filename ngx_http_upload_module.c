@@ -103,6 +103,7 @@ typedef struct {
     ngx_array_t       *field_filters;
     ngx_array_t       *cleanup_statuses;
     ngx_flag_t         forward_args;
+    ngx_flag_t         tame_arrays;
     size_t            limit_rate;
 
     unsigned int      md5:1;
@@ -444,6 +445,17 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_upload_loc_conf_t, limit_rate),
       NULL },
+     
+     /*
+      * Specifies whether array brackets in file field names must be dropped
+      */
+     { ngx_string("upload_tame_arrays"),
+       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_HTTP_LIF_CONF
+                         |NGX_CONF_FLAG,
+       ngx_conf_set_flag_slot,
+       NGX_HTTP_LOC_CONF_OFFSET,
+       offsetof(ngx_http_upload_loc_conf_t, tame_arrays),
+       NULL },
 
       ngx_null_command
 }; /* }}} */
@@ -813,6 +825,14 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
         ucln->aborted = 0;
 
         if(ulcf->field_templates) {
+
+            if(ulcf->tame_arrays && u->field_name.len > 2 &&
+                u->field_name.data[u->field_name.len - 1] == ']' &&
+                u->field_name.data[u->field_name.len - 2] == '[')
+            {
+                u->field_name.len -= 2;
+            }
+
             t = ulcf->field_templates->elts;
             for (i = 0; i < ulcf->field_templates->nelts; i++) {
 
@@ -1174,6 +1194,7 @@ ngx_http_upload_create_loc_conf(ngx_conf_t *cf)
 
     conf->store_access = NGX_CONF_UNSET_UINT;
     conf->forward_args = NGX_CONF_UNSET;
+    conf->tame_arrays = NGX_CONF_UNSET;
 
     conf->buffer_size = NGX_CONF_UNSET_SIZE;
     conf->max_header_len = NGX_CONF_UNSET_SIZE;
@@ -1237,6 +1258,11 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     if(conf->forward_args == NGX_CONF_UNSET) {
         conf->forward_args = (prev->forward_args != NGX_CONF_UNSET) ?
             prev->forward_args : 0;
+    }
+
+    if(conf->tame_arrays == NGX_CONF_UNSET) {
+        conf->tame_arrays = (prev->tame_arrays != NGX_CONF_UNSET) ?
+            prev->tame_arrays : 0;
     }
 
     if(conf->field_templates == NULL) {
