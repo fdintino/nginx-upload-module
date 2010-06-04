@@ -310,7 +310,8 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
      * Enables uploads for location and specifies location to pass modified request to  
      */
     { ngx_string("upload_pass"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_CONF_TAKE1,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_HTTP_LIF_CONF
+                        |NGX_CONF_TAKE1,
       ngx_http_upload_pass,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
@@ -320,7 +321,8 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
      * Specifies base path of file store
      */
     { ngx_string("upload_store"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_CONF_TAKE1234,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_HTTP_LIF_CONF
+                        |NGX_CONF_TAKE1234,
       ngx_conf_set_path_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_upload_loc_conf_t, store_path),
@@ -330,7 +332,8 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
      * Specifies the access mode for files in store
      */
     { ngx_string("upload_store_access"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_CONF_TAKE123,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_HTTP_LIF_CONF
+                        |NGX_CONF_TAKE123,
       ngx_conf_set_access_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_upload_loc_conf_t, store_access),
@@ -341,7 +344,8 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
      * to write data to disk
      */
     { ngx_string("upload_buffer_size"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_CONF_TAKE1,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_HTTP_LIF_CONF
+                        |NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_upload_loc_conf_t, buffer_size),
@@ -351,7 +355,8 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
      * Specifies the maximal length of the part header
      */
     { ngx_string("upload_max_part_header_len"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_CONF_TAKE1,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_HTTP_LIF_CONF
+                        |NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_upload_loc_conf_t, max_header_len),
@@ -361,7 +366,8 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
      * Specifies the maximal size of the file to be uploaded
      */
     { ngx_string("upload_max_file_size"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_CONF_TAKE1,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_HTTP_LIF_CONF
+                        |NGX_CONF_TAKE1,
       ngx_conf_set_off_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_upload_loc_conf_t, max_file_size),
@@ -371,7 +377,8 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
      * Specifies the maximal length of output body
      */
     { ngx_string("upload_max_output_body_len"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_CONF_TAKE1,
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_HTTP_LIF_CONF
+                        |NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_upload_loc_conf_t, max_output_body_len),
