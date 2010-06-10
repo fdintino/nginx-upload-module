@@ -73,8 +73,13 @@ typedef struct {
     off_t                   *parser_state;
     ngx_log_t               *log;
 
+    u_char                  *range_header_buffer;
+    u_char                  *range_header_buffer_end;
+    u_char                  **range_header_buffer_pos;
+
     unsigned int             found_lower_bound:1;
     unsigned int             complete_ranges:1;
+    unsigned int             first_range:1;
 } ngx_http_upload_merger_state_t;
 
 /*
@@ -122,6 +127,7 @@ typedef struct {
     ngx_uint_t        store_access;
     size_t            buffer_size;
     size_t            merge_buffer_size;
+    size_t            range_header_buffer_size;
     size_t            max_header_len;
     size_t            max_output_body_len;
     off_t             max_file_size;
@@ -182,6 +188,9 @@ typedef struct ngx_http_upload_ctx_s {
     u_char              *output_buffer_end;
     u_char              *output_buffer_pos;
     u_char              *merge_buffer;
+    u_char              *range_header_buffer;
+    u_char              *range_header_buffer_pos;
+    u_char              *range_header_buffer_end;
 
     ngx_http_request_body_data_handler_pt data_handler;
 
@@ -413,13 +422,24 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
 
     /*
      * Specifies the size of buffer, which will be used
-     * to merge ranges into state file
+     * for merging ranges into state file
      */
     { ngx_string("upload_merge_buffer_size"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_upload_loc_conf_t, merge_buffer_size),
+      NULL },
+
+    /*
+     * Specifies the size of buffer, which will be used
+     * for returning range header
+     */
+    { ngx_string("upload_range_header_buffer_size"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_size_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_upload_loc_conf_t, range_header_buffer_size),
       NULL },
 
     /*
@@ -713,14 +733,67 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
     ngx_int_t                   rc;
     ngx_str_t                   *uri;
     ngx_buf_t                      *b;
-    ngx_chain_t                    *cl;
+    ngx_chain_t                    *cl, out;
     ngx_str_t                   dummy = ngx_string("<ngx_upload_module_dummy>");
+    ngx_table_elt_t             *h;
 
     if(ctx->prevent_output) {
         r->headers_out.status = NGX_HTTP_CREATED;
-        r->header_only = 1;
-        r->headers_out.content_length_n = 0;
-        ngx_http_finalize_request(r, ngx_http_send_header(r));
+
+        /*
+         * Add range header and body
+         */
+        if(ctx->range_header_buffer_pos != ctx->range_header_buffer) {
+            h = ngx_list_push(&r->headers_out.headers);
+            if (h == NULL) {
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            }
+
+            h->hash = 1;
+            h->key.len = sizeof("Range") - 1;
+            h->key.data = (u_char *) "Range";
+            h->value.len = ctx->range_header_buffer_pos - ctx->range_header_buffer;
+            h->value.data = ctx->range_header_buffer;
+
+            b = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));
+            if (b == NULL) {
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            }
+
+            r->headers_out.content_length_n = h->value.len;
+
+            r->allow_ranges = 0;
+
+            rc = ngx_http_send_header(r);
+
+            if(rc == NGX_ERROR) {
+                return NGX_HTTP_INTERNAL_SERVER_ERROR;
+            }
+
+            if(rc > NGX_OK) {
+                return rc;
+            }
+
+            b->in_file = 0;
+            b->memory = 1;
+            b->last_buf = b->last_in_chain = b->flush = 1;
+
+            b->start = b->pos = ctx->range_header_buffer;
+            b->last = ctx->range_header_buffer_pos;
+            b->end = ctx->range_header_buffer_end;
+
+            out.buf = b;
+            out.next = NULL;
+
+            ngx_http_finalize_request(r, ngx_http_output_filter(r, &out));
+        }
+        else {
+            r->header_only = 1;
+            r->headers_out.content_length_n = 0;
+
+            ngx_http_finalize_request(r, ngx_http_send_header(r));
+        }
+
         return NGX_OK;
     }
 
@@ -1348,6 +1421,25 @@ ngx_http_upload_append_field(ngx_http_upload_ctx_t *u, ngx_str_t *name, ngx_str_
     return NGX_OK;
 } /* }}} */
 
+static ngx_int_t ngx_http_upload_add_range(ngx_http_upload_merger_state_t *ms, ngx_http_upload_range_t *range_n) {
+    ms->out_buf->last = ngx_sprintf(ms->out_buf->last, "%O-%O/%O\x0a",
+        range_n->start,
+        range_n->end,
+        range_n->total);
+
+    if(*ms->range_header_buffer_pos < ms->range_header_buffer_end) {
+        *ms->range_header_buffer_pos = ngx_sprintf(*ms->range_header_buffer_pos,
+            ms->first_range ? "%O-%O/%O" : ",%O-%O/%O",
+            range_n->start,
+            range_n->end,
+            range_n->total);
+
+        ms->first_range = 0;
+    }
+
+    return NGX_OK;
+}
+
 static ngx_int_t /* {{{ ngx_http_upload_buf_merge_range */
 ngx_http_upload_buf_merge_range(ngx_http_upload_merger_state_t *ms, ngx_http_upload_range_t *range_n) {
     u_char *p, c;
@@ -1421,10 +1513,9 @@ ngx_http_upload_buf_merge_range(ngx_http_upload_merger_state_t *ms, ngx_http_upl
                      * Current range is entirely below the new one,
                      * output current one and seek next
                      */
-                    ms->out_buf->last = ngx_sprintf(ms->out_buf->last, "%O-%O/%O\x0a",
-                        ms->current_range_n.start,
-                        ms->current_range_n.end,
-                        ms->current_range_n.total);
+                    if(ngx_http_upload_add_range(ms, &ms->current_range_n) != NGX_OK) {
+                        return NGX_ERROR;
+                    }
 
                     ngx_log_debug3(NGX_LOG_DEBUG_CORE, ms->log, 0,
                                    "< %O-%O/%O", ms->current_range_n.start,
@@ -1437,13 +1528,13 @@ ngx_http_upload_buf_merge_range(ngx_http_upload_merger_state_t *ms, ngx_http_upl
                      * Current range is entirely above the new one,
                      * insert new range
                      */
-                    ms->out_buf->last = ngx_sprintf(ms->out_buf->last, "%O-%O/%O\x0a",
-                        range_n->start, range_n->end, range_n->total);
+                    if(ngx_http_upload_add_range(ms, range_n) != NGX_OK) {
+                        return NGX_ERROR;
+                    }
 
-                    ms->out_buf->last = ngx_sprintf(ms->out_buf->last, "%O-%O/%O\x0a",
-                        ms->current_range_n.start,
-                        ms->current_range_n.end,
-                        ms->current_range_n.total);
+                    if(ngx_http_upload_add_range(ms, &ms->current_range_n) != NGX_OK) {
+                        return NGX_ERROR;
+                    }
 
                     ngx_log_debug6(NGX_LOG_DEBUG_CORE, ms->log, 0,
                                    "> %O-%O/%O %O-%O/%O",
@@ -1481,7 +1572,9 @@ ngx_http_upload_buf_merge_range(ngx_http_upload_merger_state_t *ms, ngx_http_upl
         }
 
         if(!ms->found_lower_bound) {
-            ms->out_buf->last = ngx_sprintf(ms->out_buf->last, "%O-%O/%O\x0a", range_n->start, range_n->end, range_n->total);
+            if(ngx_http_upload_add_range(ms, range_n) != NGX_OK) {
+                return NGX_ERROR;
+            }
 
             ngx_log_debug3(NGX_LOG_DEBUG_CORE, ms->log, 0,
                            "a %O-%O/%O",
@@ -1535,6 +1628,11 @@ ngx_http_upload_merge_ranges(ngx_http_upload_ctx_t *u, ngx_http_upload_range_t *
 
     ms.found_lower_bound = 0;
     ms.complete_ranges = 0;
+    ms.first_range = 1;
+
+    ms.range_header_buffer = u->range_header_buffer;
+    ms.range_header_buffer_pos = &u->range_header_buffer_pos;
+    ms.range_header_buffer_end = u->range_header_buffer_end;
 
     range_to_merge_n = *range_n;
 
@@ -1623,6 +1721,7 @@ ngx_http_upload_create_loc_conf(ngx_conf_t *cf)
 
     conf->buffer_size = NGX_CONF_UNSET_SIZE;
     conf->merge_buffer_size = NGX_CONF_UNSET_SIZE;
+    conf->range_header_buffer_size = NGX_CONF_UNSET_SIZE;
     conf->max_header_len = NGX_CONF_UNSET_SIZE;
     conf->max_output_body_len = NGX_CONF_UNSET_SIZE;
     conf->max_file_size = NGX_CONF_UNSET;
@@ -1680,6 +1779,10 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_size_value(conf->merge_buffer_size,
                               prev->merge_buffer_size,
                               (size_t) ngx_pagesize >> 1);
+
+    ngx_conf_merge_size_value(conf->range_header_buffer_size,
+                              prev->range_header_buffer_size,
+                              (size_t) 256);
 
     ngx_conf_merge_size_value(conf->max_header_len,
                               prev->max_header_len,
@@ -2982,6 +3085,14 @@ static ngx_int_t upload_start(ngx_http_upload_ctx_t *upload_ctx, ngx_http_upload
     upload_ctx->output_buffer_end = upload_ctx->output_buffer + ulcf->buffer_size;
 
     upload_ctx->header_accumulator_pos = upload_ctx->header_accumulator;
+
+    upload_ctx->range_header_buffer = ngx_pcalloc(upload_ctx->request->pool, ulcf->range_header_buffer_size);
+
+	if(upload_ctx->range_header_buffer == NULL)
+		return NGX_ERROR;
+
+    upload_ctx->range_header_buffer_pos = upload_ctx->range_header_buffer;
+    upload_ctx->range_header_buffer_end = upload_ctx->range_header_buffer + ulcf->range_header_buffer_size;
 
     upload_ctx->first_part = 1;
 
