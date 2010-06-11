@@ -2847,9 +2847,9 @@ static ngx_int_t upload_parse_content_disposition(ngx_http_upload_ctx_t *upload_
 
     fieldname_start = p;
 
-    do{
+//    do{
         fieldname_start = strstr(fieldname_start, FIELDNAME_STRING);
-    }while((fieldname_start != 0) && (fieldname_start + sizeof(FIELDNAME_STRING) - 1 == filename_start));
+//    }while((fieldname_start != 0) && (fieldname_start + sizeof(FIELDNAME_STRING) - 1 == filename_start));
 
     if(fieldname_start != 0) {
         fieldname_start += sizeof(FIELDNAME_STRING)-1;
