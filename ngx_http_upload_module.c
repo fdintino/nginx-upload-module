@@ -226,6 +226,7 @@ typedef struct ngx_http_upload_ctx_s {
     unsigned int        started:1;
     unsigned int        unencoded:1;
     unsigned int        no_content:1;
+    unsigned int        raw_input:1;
 } ngx_http_upload_ctx_t;
 
 static ngx_int_t ngx_http_upload_handler(ngx_http_request_t *r);
@@ -1150,13 +1151,26 @@ static void ngx_http_upload_finish_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
             ngx_crc32_final(u->crc32);
 
         if(u->partial_content) {
-/*            if(u->output_file.offset != u->content_range_n.end) {
+            if(u->output_file.offset != u->content_range_n.end + 1) {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0
+                    , "file offset at the end of a part %O does not match the end specified range %O-%O/%O"
+                    , u->output_file.offset
+                    , u->content_range_n.start
+                    , u->content_range_n.end
+                    , u->content_range_n.total
+                    , u->output_file.name
+                    );
+
                 goto rollback;
-            }*/
+            }
 
             rc = ngx_http_upload_merge_ranges(u, &u->content_range_n);
 
             if(rc == NGX_ERROR) {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0
+                    , "error merging ranges"
+                    );
+
                 goto rollback;
             }
 
@@ -1454,9 +1468,6 @@ ngx_http_upload_buf_merge_range(ngx_http_upload_merger_state_t *ms, ngx_http_upl
 
         while(p != ms->in_buf->last) {
 
-            ngx_log_debug1(NGX_LOG_DEBUG_CORE, ms->log, 0,
-                           "parsing %c", *p);
-
             c = *p++;
 
             if(c >= '0' && c <= '9') {
@@ -1528,8 +1539,10 @@ ngx_http_upload_buf_merge_range(ngx_http_upload_merger_state_t *ms, ngx_http_upl
                      * Current range is entirely above the new one,
                      * insert new range
                      */
-                    if(ngx_http_upload_add_range(ms, range_n) != NGX_OK) {
-                        return NGX_ERROR;
+                    if(!ms->found_lower_bound) {
+                        if(ngx_http_upload_add_range(ms, range_n) != NGX_OK) {
+                            return NGX_ERROR;
+                        }
                     }
 
                     if(ngx_http_upload_add_range(ms, &ms->current_range_n) != NGX_OK) {
@@ -2784,12 +2797,14 @@ ngx_http_process_request_body(ngx_http_request_t *r, ngx_chain_t *body)
         if(rc != NGX_OK)
             return rc;
 
-        // Signal end of body
-        if(r->request_body->rest == 0) {
-            rc = u->data_handler(u, body->buf->pos, body->buf->pos);
+        if(u->raw_input) {
+            // Signal end of body
+            if(r->request_body->rest == 0) {
+                rc = u->data_handler(u, body->buf->pos, body->buf->pos);
 
-            if(rc != NGX_OK)
-                return rc;
+                if(rc != NGX_OK)
+                    return rc;
+            }
         }
 
         body = body->next;
@@ -3146,6 +3161,7 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
 
                 upload_ctx->is_file = 1;
                 upload_ctx->unencoded = 1;
+                upload_ctx->raw_input = 1;
         
                 upload_ctx->data_handler = upload_process_raw_buf;
             }else if(!strncasecmp(SESSION_ID_STRING, (char*)header[i].key.data, sizeof(SESSION_ID_STRING) - 1 - 1)) {
@@ -3351,8 +3367,10 @@ static ngx_int_t upload_process_buf(ngx_http_upload_ctx_t *upload_ctx, u_char *s
 
 	// No more data?
 	if(start == end) {
-		if(upload_ctx->state != upload_state_finish)
+		if(upload_ctx->state != upload_state_finish) {
+            ngx_log_error(NGX_LOG_ERR, upload_ctx->log, 0, "premature end of body");
 			return NGX_UPLOAD_MALFORMED; // Signal error if still haven't finished
+        }
 		else
 			return NGX_OK; // Otherwise confirm end of stream
     }
@@ -3422,8 +3440,10 @@ static ngx_int_t upload_process_buf(ngx_http_upload_ctx_t *upload_ctx, u_char *s
 						if(upload_ctx->header_accumulator_pos < upload_ctx->header_accumulator_end - 1)
 							*upload_ctx->header_accumulator_pos++ = *p;
 						else {
+                            ngx_log_error(NGX_LOG_ERR, upload_ctx->log, 0, "part header is too long");
+
                             upload_ctx->state = upload_state_finish;
-							return NGX_UPLOAD_MALFORMED; // Header is too long
+							return NGX_UPLOAD_MALFORMED;
                         }
 						break;
 				}
