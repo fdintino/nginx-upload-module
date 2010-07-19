@@ -91,24 +91,25 @@ typedef struct ngx_http_upload_cleanup_s {
  * Upload configuration for specific location
  */
 typedef struct {
-    ngx_str_t         url;
-    ngx_path_t        *store_path;
-    ngx_uint_t        store_access;
-    size_t            buffer_size;
-    size_t            max_header_len;
-    size_t            max_output_body_len;
-    off_t             max_file_size;
-    ngx_array_t       *field_templates;
-    ngx_array_t       *aggregate_field_templates;
-    ngx_array_t       *field_filters;
-    ngx_array_t       *cleanup_statuses;
-    ngx_flag_t         forward_args;
-    ngx_flag_t         tame_arrays;
-    size_t            limit_rate;
+    ngx_str_t                     url;
+    ngx_http_complex_value_t      *url_cv;
+    ngx_path_t                    *store_path;
+    ngx_uint_t                    store_access;
+    size_t                        buffer_size;
+    size_t                        max_header_len;
+    size_t                        max_output_body_len;
+    off_t                         max_file_size;
+    ngx_array_t                   *field_templates;
+    ngx_array_t                   *aggregate_field_templates;
+    ngx_array_t                   *field_filters;
+    ngx_array_t                   *cleanup_statuses;
+    ngx_flag_t                    forward_args;
+    ngx_flag_t                    tame_arrays;
+    size_t                        limit_rate;
 
-    unsigned int      md5:1;
-    unsigned int      sha1:1;
-    unsigned int      crc32:1;
+    unsigned int                  md5:1;
+    unsigned int                  sha1:1;
+    unsigned int                  crc32:1;
 } ngx_http_upload_loc_conf_t;
 
 typedef struct ngx_http_upload_md5_ctx_s {
@@ -651,7 +652,7 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
     ngx_str_t                   args;
     ngx_uint_t                  flags;
     ngx_int_t                   rc;
-    ngx_str_t                   *uri;
+    ngx_str_t                   uri;
     ngx_buf_t                      *b;
     ngx_chain_t                    *cl;
     ngx_str_t                   dummy = ngx_string("<ngx_upload_module_dummy>");
@@ -704,7 +705,23 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
     *b->last++ = CR;
     *b->last++ = LF;
 
-    uri = &ulcf->url;
+    if (ulcf->url_cv) {
+        /* complex value */
+        if (ngx_http_complex_value(r, ulcf->url_cv, &uri) != NGX_OK) {
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+
+        if (uri.len == 0) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                          "empty \"upload_pass\" (was: \"%V\")",
+                          &ulcf->url_cv->value);
+
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+    } else {
+        /* simple value */
+        uri = ulcf->url;
+    }
 
     if (ulcf->forward_args) {
       args = r->args; /* forward the query args */
@@ -716,7 +733,7 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
 
     flags = 0;
 
-    if (ngx_http_parse_unsafe_uri(r, uri, &args, &flags) != NGX_OK) {
+    if (ngx_http_parse_unsafe_uri(r, &uri, &args, &flags) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
@@ -742,11 +759,11 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
     r->main->count--;
 #endif
 
-    if(uri->len != 0 && uri->data[0] == '/') {
-        rc = ngx_http_internal_redirect(r, uri, &args);
+    if(uri.len != 0 && uri.data[0] == '/') {
+        rc = ngx_http_internal_redirect(r, &uri, &args);
     }
     else{
-        rc = ngx_http_named_location(r, uri);
+        rc = ngx_http_named_location(r, &uri);
     }
 
     if (rc == NGX_ERROR) {
@@ -1225,7 +1242,10 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_upload_loc_conf_t  *prev = parent;
     ngx_http_upload_loc_conf_t  *conf = child;
 
-    ngx_conf_merge_str_value(conf->url, prev->url, "");
+    if ((conf->url.len == 0) && (conf->url_cv == NULL)) {
+        conf->url = prev->url;
+        conf->url_cv = prev->url_cv;
+    }
 
     if(conf->url.len != 0) {
 #if defined nginx_version && nginx_version >= 7052
@@ -1781,18 +1801,48 @@ ngx_http_upload_cleanup(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 static char * /* {{{ ngx_http_upload_pass */
 ngx_http_upload_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
-    ngx_http_core_loc_conf_t    *clcf;
-    ngx_http_upload_loc_conf_t  *ulcf = conf;
+    ngx_http_core_loc_conf_t          *clcf;
+    ngx_http_upload_loc_conf_t        *ulcf = conf;
+    ngx_str_t                         *value;
+    ngx_http_compile_complex_value_t   ccv;
 
-    ngx_str_t                   *value, *url;
+    if ((ulcf->url.len != 0) || (ulcf->url_cv != NULL)) {
+        return "is duplicate";
+    }
 
     value = cf->args->elts;
-    url = &value[1];
+
+    if (value[1].len == 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "empty value in \"%V\" directive",
+                           &cmd->name);
+
+        return NGX_CONF_ERROR;
+    }
 
     clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
     clcf->handler = ngx_http_upload_handler;
 
-    ulcf->url = *url;
+    if (ngx_http_script_variables_count(&value[1])) {
+        /* complex value */
+        ulcf->url_cv = ngx_palloc(cf->pool, sizeof(ngx_http_complex_value_t));
+        if (ulcf->url_cv == NULL) {
+            return NGX_CONF_ERROR;
+        }
+
+        ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
+
+        ccv.cf = cf;
+        ccv.value = &value[1];
+        ccv.complex_value = ulcf->url_cv;
+
+        if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
+            return NGX_CONF_ERROR;
+        }
+    } else {
+        /* simple value */
+        ulcf->url = value[1];
+    }
 
     return NGX_CONF_OK;
 } /* }}} */
