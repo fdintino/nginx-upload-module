@@ -2797,17 +2797,17 @@ ngx_http_process_request_body(ngx_http_request_t *r, ngx_chain_t *body)
         if(rc != NGX_OK)
             return rc;
 
-        if(u->raw_input) {
-            // Signal end of body
-            if(r->request_body->rest == 0) {
-                rc = u->data_handler(u, body->buf->pos, body->buf->pos);
-
-                if(rc != NGX_OK)
-                    return rc;
-            }
-        }
-
         body = body->next;
+    }
+
+    if(u->raw_input) {
+        // Signal end of body
+        if(r->request_body->rest == 0) {
+            rc = u->data_handler(u, NULL, NULL);
+
+            if(rc != NGX_OK)
+                return rc;
+        }
     }
 
     return NGX_OK;
