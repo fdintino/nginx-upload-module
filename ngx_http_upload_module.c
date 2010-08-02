@@ -1709,7 +1709,7 @@ ngx_http_upload_merge_ranges(ngx_http_upload_ctx_t *u, ngx_http_upload_range_t *
         result = ftruncate(state_file->fd, out_buf.file_pos);
     }
 
-    return ms.complete_ranges ? NGX_OK : NGX_AGAIN;
+    rc = ms.complete_ranges ? NGX_OK : NGX_AGAIN;
 
 failed:
     ngx_unlock_fd(state_file->fd);
