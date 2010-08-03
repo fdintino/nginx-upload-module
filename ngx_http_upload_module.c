@@ -958,7 +958,10 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
 
                 ngx_memcpy(u->state_file.name.data, file->name.data, file->name.len);
 
-                ngx_memcpy(u->state_file.name.data + file->name.len, ".state", sizeof(".state"));
+                /*
+                 * NOTE: we add terminating zero for system calls
+                 */
+                ngx_memcpy(u->state_file.name.data + file->name.len, ".state", sizeof(".state") - 1 + 1);
 
                 ngx_log_debug1(NGX_LOG_DEBUG_CORE, file->log, 0,
                                "hashed path of state file: %s", u->state_file.name.data);
@@ -1190,6 +1193,12 @@ static void ngx_http_upload_finish_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
                 u->prevent_output = 1;
 
                 return;
+            }
+
+            if(ngx_delete_file(u->state_file.name.data) == NGX_FILE_ERROR) {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "failed to remove state file \"%V\"", &u->state_file.name);
+            } else {
+                ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "removed state file \"%V\"", &u->state_file.name);
             }
         }
 
