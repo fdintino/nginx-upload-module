@@ -3131,6 +3131,7 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
     u_char                    *mime_type_end_ptr;
     u_char                    *boundary_start_ptr, *boundary_end_ptr;
     ngx_atomic_uint_t          boundary;
+    ngx_http_upload_loc_conf_t *ulcf;
 
     // Check whether Content-Type header is missing
     if(headers_in->content_type == NULL) {
@@ -3211,6 +3212,14 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
                 ngx_log_debug3(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
                                "partial content, range %O-%O/%O", upload_ctx->content_range_n.start, 
                                upload_ctx->content_range_n.end, upload_ctx->content_range_n.total);
+
+                ulcf = ngx_http_get_module_loc_conf(upload_ctx->request, ngx_http_upload_module);
+
+                if(ulcf->max_file_size != 0 && upload_ctx->content_range_n.total > ulcf->max_file_size) {
+                    ngx_log_error(NGX_LOG_ERR, upload_ctx->log, 0,
+                                  "entity length is too big");
+                    return NGX_HTTP_REQUEST_ENTITY_TOO_LARGE;
+                }
 
                 upload_ctx->partial_content = 1;
             }
