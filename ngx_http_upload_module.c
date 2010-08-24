@@ -3019,64 +3019,6 @@ static ngx_int_t upload_parse_part_header(ngx_http_upload_ctx_t *upload_ctx, cha
 
         strncpy((char*)upload_ctx->content_type.data, content_type_str, upload_ctx->content_type.len);
     }
-    else if(!strncasecmp(CONTENT_RANGE_STRING, header, sizeof(CONTENT_RANGE_STRING)-1)) {
-        char *content_range_str = header + sizeof(CONTENT_RANGE_STRING)-1;
-        
-        content_range_str += strspn(content_range_str, " ");
-
-        upload_ctx->content_range.data = (u_char*)content_range_str;
-        upload_ctx->content_range.len = header_end - content_range_str;
-        
-        if(upload_ctx->content_range.len == 0) {
-            ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
-                           "empty Content-Range in part header");
-            return NGX_UPLOAD_MALFORMED; // Empty Content-Range field
-        }
-
-        if(strncasecmp(content_range_str, BYTES_UNIT_STRING, sizeof(BYTES_UNIT_STRING) - 1)) {
-            ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
-                           "unsupported range unit");
-            return NGX_UPLOAD_MALFORMED;
-        }
-
-        s.data = (u_char*)content_range_str + sizeof(BYTES_UNIT_STRING) - 1;
-        s.len = upload_ctx->content_range.len - sizeof(BYTES_UNIT_STRING) + 1;
-
-        if(ngx_http_upload_parse_range(&s, &upload_ctx->content_range_n) != NGX_OK) {
-            ngx_log_debug2(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
-                           "invalid range %V (%V)", &s, &upload_ctx->content_range);
-            return NGX_UPLOAD_MALFORMED;
-        }
-
-        ngx_log_debug3(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
-                       "partial content, range %O-%O/%O", upload_ctx->content_range_n.start, 
-                       upload_ctx->content_range_n.end, upload_ctx->content_range_n.total);
-
-        upload_ctx->partial_content = 1;
-    }
-    else if(!strncasecmp(SESSION_ID_STRING, header, sizeof(SESSION_ID_STRING)-1)) {
-        char *session_id_str = header + sizeof(SESSION_ID_STRING)-1;
-        
-        session_id_str += strspn(session_id_str, " ");
-
-        if(session_id_str == header_end) {
-            ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
-                           "empty Session-ID in part header");
-            return NGX_UPLOAD_MALFORMED;
-        }
-
-        upload_ctx->session_id.data = ngx_pcalloc(upload_ctx->request->pool, header_end - session_id_str);
-        
-        if(upload_ctx->session_id.data == NULL)
-            return NGX_UPLOAD_NOMEM;
-
-        strncpy((char*)upload_ctx->session_id.data, session_id_str, header_end - session_id_str);
-
-        upload_ctx->session_id.len = header_end - session_id_str;
-
-        ngx_log_debug1(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
-                       "session id %V", &upload_ctx->session_id);
-    }
 
     return NGX_OK;
 } /* }}} */
