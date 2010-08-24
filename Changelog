@@ -1,4 +1,10 @@
 
+Version 2.2.0
+ * Added feature: resumable uploads
+ * Added feature: allow to use of $variables in "upload_pass" directive (Piotr Sikora)
+ * Added feature: allow module's directives inside if statements (David Backeus)
+ * Added feature: directive upload_tame_arrays and ability to do some magic with php arrays
+
 Version 2.0.12
  * Fixed bug: keepalive connection was hanging after upload has been completed.
  * Change: if request method is not POST return HTTP 405 in order to simplify configuration.
