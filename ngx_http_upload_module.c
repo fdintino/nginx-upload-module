@@ -33,6 +33,7 @@
 #define CONTENT_RANGE_STRING                    "Content-Range:"
 #define X_CONTENT_RANGE_STRING                  "X-Content-Range:"
 #define SESSION_ID_STRING                       "Session-ID:"
+#define X_SESSION_ID_STRING                     "X-Session-ID:"
 #define FORM_DATA_STRING                        "form-data"
 #define ATTACHMENT_STRING                       "attachment"
 #define FILENAME_STRING                         "filename=\""
@@ -3148,6 +3149,26 @@ static ngx_int_t upload_start(ngx_http_upload_ctx_t *upload_ctx, ngx_http_upload
 	return NGX_OK;
 } /* }}} */
 
+static ngx_int_t /* {{{ ngx_http_upload_validate_session_id */
+ngx_http_upload_validate_session_id(ngx_str_t *session_id) {
+    u_char *p, *q;
+
+    p = session_id->data;
+    q = session_id->data + session_id->len;
+
+    while(p != q) {
+        if(!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z')
+            || *p == '_' || *p == '-'))
+        {
+            return NGX_ERROR;
+        }
+
+        p++;
+    }
+
+    return NGX_OK;
+}
+
 static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx, ngx_http_headers_in_t *headers_in) { /* {{{ */
     ngx_str_t                 *content_type, s;
     ngx_list_part_t           *part;
@@ -3199,10 +3220,18 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
                 upload_ctx->raw_input = 1;
         
                 upload_ctx->data_handler = upload_process_raw_buf;
-            }else if(!strncasecmp(SESSION_ID_STRING, (char*)header[i].key.data, sizeof(SESSION_ID_STRING) - 1 - 1)) {
+            }else if(!strncasecmp(SESSION_ID_STRING, (char*)header[i].key.data, sizeof(SESSION_ID_STRING) - 1 - 1)
+                || !strncasecmp(X_SESSION_ID_STRING, (char*)header[i].key.data, sizeof(X_SESSION_ID_STRING) - 1 - 1))
+            {
                 if(header[i].value.len == 0) {
                     ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
                                    "empty Session-ID in header");
+                    return NGX_ERROR;
+                }
+
+                if(ngx_http_upload_validate_session_id(&header[i].value) != NGX_OK) {
+                    ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+                                   "invalid Session-ID in header");
                     return NGX_ERROR;
                 }
 
