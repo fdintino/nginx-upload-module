@@ -139,6 +139,7 @@ typedef struct {
     ngx_array_t                   *cleanup_statuses;
     ngx_flag_t                    forward_args;
     ngx_flag_t                    tame_arrays;
+    ngx_flag_t                    resumable_uploads;
     size_t                        limit_rate;
 
     unsigned int                  md5:1;
@@ -528,7 +529,7 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL},
-     
+
      /*
       * Specifies the whether or not to forward query args
       * to the upload_pass redirect location
@@ -551,7 +552,7 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_upload_loc_conf_t, limit_rate),
       NULL },
-     
+
      /*
       * Specifies whether array brackets in file field names must be dropped
       */
@@ -561,6 +562,17 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
        ngx_conf_set_flag_slot,
        NGX_HTTP_LOC_CONF_OFFSET,
        offsetof(ngx_http_upload_loc_conf_t, tame_arrays),
+       NULL },
+
+     /*
+      * Specifies whether resumable uploads are allowed
+      */
+     { ngx_string("upload_resumable"),
+       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_HTTP_LIF_CONF
+                         |NGX_CONF_FLAG,
+       ngx_conf_set_flag_slot,
+       NGX_HTTP_LOC_CONF_OFFSET,
+       offsetof(ngx_http_upload_loc_conf_t, resumable_uploads),
        NULL },
 
       ngx_null_command
@@ -1786,6 +1798,7 @@ ngx_http_upload_create_loc_conf(ngx_conf_t *cf)
     conf->store_access = NGX_CONF_UNSET_UINT;
     conf->forward_args = NGX_CONF_UNSET;
     conf->tame_arrays = NGX_CONF_UNSET;
+    conf->resumable_uploads = NGX_CONF_UNSET;
 
     conf->buffer_size = NGX_CONF_UNSET_SIZE;
     conf->merge_buffer_size = NGX_CONF_UNSET_SIZE;
@@ -1877,6 +1890,11 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     if(conf->tame_arrays == NGX_CONF_UNSET) {
         conf->tame_arrays = (prev->tame_arrays != NGX_CONF_UNSET) ?
             prev->tame_arrays : 0;
+    }
+
+    if(conf->resumable_uploads == NGX_CONF_UNSET) {
+        conf->resumable_uploads = (prev->resumable_uploads != NGX_CONF_UNSET) ?
+            prev->resumable_uploads : 0;
     }
 
     if(conf->field_templates == NULL) {
@@ -3179,6 +3197,8 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
     ngx_atomic_uint_t          boundary;
     ngx_http_upload_loc_conf_t *ulcf;
 
+    ulcf = ngx_http_get_module_loc_conf(upload_ctx->request, ngx_http_upload_module);
+
     // Check whether Content-Type header is missing
     if(headers_in->content_type == NULL) {
         ngx_log_error(NGX_LOG_ERR, upload_ctx->log, ngx_errno,
@@ -3190,6 +3210,12 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
 
     if(ngx_strncasecmp(content_type->data, (u_char*) MULTIPART_FORM_DATA_STRING,
         sizeof(MULTIPART_FORM_DATA_STRING) - 1)) {
+
+        if(!ulcf->resumable_uploads) {
+            ngx_log_error(NGX_LOG_ERR, upload_ctx->log, 0,
+                "Content-Type is not multipart/form-data and resumable uploads are off: %V", content_type);
+            return NGX_HTTP_UNSUPPORTED_MEDIA_TYPE;
+        }
         /*
          * Content-Type is not multipart/form-data,
          * look for Content-Disposition header now
@@ -3267,8 +3293,6 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
                                "partial content, range %O-%O/%O", upload_ctx->content_range_n.start, 
                                upload_ctx->content_range_n.end, upload_ctx->content_range_n.total);
 
-                ulcf = ngx_http_get_module_loc_conf(upload_ctx->request, ngx_http_upload_module);
-
                 if(ulcf->max_file_size != 0 && upload_ctx->content_range_n.total > ulcf->max_file_size) {
                     ngx_log_error(NGX_LOG_ERR, upload_ctx->log, 0,
                                   "entity length is too big");
@@ -3280,7 +3304,7 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
         }
 
         if(!upload_ctx->unencoded) {
-            ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
+            ngx_log_error(NGX_LOG_ERR, upload_ctx->log, 0,
                            "Content-Type is not multipart/form-data and no Content-Disposition header found");
             return NGX_HTTP_UNSUPPORTED_MEDIA_TYPE;
         }
