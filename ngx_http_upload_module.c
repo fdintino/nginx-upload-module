@@ -63,6 +63,16 @@ typedef struct {
     ngx_array_t             *value_values;
 } ngx_http_upload_field_template_t;
 
+
+/*
+ * Template for rate limit
+ */
+typedef struct {
+    ngx_int_t                variable_index;
+    ngx_int_t                variable_key;
+    ngx_str_t                variable_name;
+} ngx_http_upload_limit_rate_template_t;
+
 /*
  * Filter for fields in output form
  */
@@ -106,6 +116,9 @@ typedef struct {
     ngx_flag_t                    forward_args;
     ngx_flag_t                    tame_arrays;
     size_t                        limit_rate;
+    ngx_int_t                     kp;
+
+    ngx_array_t                   *limit_rate_templates;
 
     unsigned int                  md5:1;
     unsigned int                  sha1:1;
@@ -160,6 +173,7 @@ typedef struct ngx_http_upload_ctx_s {
     ngx_chain_t         *checkpoint;
     size_t              output_body_len;
     size_t              limit_rate;
+    size_t              d_limit_rate;
     ssize_t             received;
 
     ngx_pool_cleanup_t          *cln;
@@ -204,6 +218,8 @@ static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u,
     u_char *buf, size_t len);
 static ngx_int_t ngx_http_upload_append_field(ngx_http_upload_ctx_t *u,
     ngx_str_t *name, ngx_str_t *value);
+static ngx_int_t ngx_http_upload_eval_limit_rate(ngx_http_request_t *r,
+    ngx_http_upload_loc_conf_t *upcf, size_t *limit_rate);
 
 static void ngx_http_read_upload_client_request_body_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r);
@@ -216,6 +232,8 @@ static char *ngx_http_upload_set_form_field(ngx_conf_t *cf, ngx_command_t *cmd,
 static char *ngx_http_upload_pass_form_field(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static char *ngx_http_upload_cleanup(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
+static char* ngx_http_upload_limit_rate(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static void ngx_upload_cleanup_handler(void *data);
 
@@ -448,8 +466,8 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
       */
     { ngx_string("upload_limit_rate"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF
-                        |NGX_CONF_TAKE1,
-      ngx_conf_set_size_slot,
+                        |NGX_CONF_1MORE,
+      ngx_http_upload_limit_rate,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_upload_loc_conf_t, limit_rate),
       NULL },
@@ -464,6 +482,17 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
        NGX_HTTP_LOC_CONF_OFFSET,
        offsetof(ngx_http_upload_loc_conf_t, tame_arrays),
        NULL },
+
+    /*
+     * Specifies the propotional term for dynamic rate limit regulator
+     */
+    { ngx_string("upload_kp"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_HTTP_LIF_CONF
+                        |NGX_CONF_TAKE1,
+      ngx_conf_set_num_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_upload_loc_conf_t, kp),
+      NULL },
 
       ngx_null_command
 }; /* }}} */
@@ -569,6 +598,7 @@ ngx_http_upload_handler(ngx_http_request_t *r)
     ngx_http_upload_loc_conf_t  *ulcf;
     ngx_http_upload_ctx_t     *u;
     ngx_int_t                 rc;
+    size_t                    limit_rate = 0;
 
     if (!(r->method & NGX_HTTP_POST))
         return NGX_HTTP_NOT_ALLOWED;
@@ -620,9 +650,20 @@ ngx_http_upload_handler(ngx_http_request_t *r)
     u->chain = u->last = u->checkpoint = NULL;
     u->output_body_len = 0;
     u->no_content = 1;
-    u->limit_rate = ulcf->limit_rate;
     u->received = 0;
     u->ordinal = 0;
+
+    if(ngx_http_upload_eval_limit_rate(r, ulcf, &limit_rate) == NGX_OK) {
+        if(limit_rate) {
+            u->d_limit_rate = u->limit_rate = limit_rate;
+        }
+        else {
+            u->d_limit_rate = u->limit_rate = ulcf->limit_rate;
+        }
+    }
+    else {
+        u->d_limit_rate = u->limit_rate = ulcf->limit_rate;
+    }
 
     upload_init_ctx(u);
 
@@ -1126,6 +1167,49 @@ static ngx_int_t ngx_http_upload_flush_output_buffer(ngx_http_upload_ctx_t *u, u
     }
 } /* }}} */
 
+static ngx_int_t
+ngx_http_upload_eval_limit_rate(ngx_http_request_t *r, ngx_http_upload_loc_conf_t *upcf, size_t *limit_rate)
+{
+    ngx_http_upload_limit_rate_template_t   *t;
+    ngx_int_t                                i;
+    ngx_http_variable_value_t               *value;
+    ngx_str_t                                limit_rate_str;
+
+    if(upcf->limit_rate_templates == NULL || limit_rate == NULL) {
+        return NGX_OK;
+    }
+
+    *limit_rate = 0;
+
+    t = upcf->limit_rate_templates->elts;
+
+    for(i = 0;i < upcf->limit_rate_templates->nelts;i++) {
+        if(t[i].variable_index != NGX_ERROR) {
+            value = ngx_http_get_flushed_variable(r, t[i].variable_index);
+        }
+        else {
+            value = ngx_http_get_variable(r, &t[i].variable_name, t[i].variable_key);
+        }
+
+        if(value != NULL && !value->not_found) {
+            limit_rate_str.data = value->data;
+            limit_rate_str.len = value->len;
+
+            *limit_rate = ngx_parse_size(&limit_rate_str);
+        
+            if(*limit_rate == (size_t) NGX_ERROR) {
+                return NGX_ERROR;
+            }
+
+            if(*limit_rate != 0) {
+                break;
+            }
+        }
+    }
+
+    return NGX_OK;
+}
+
 static void /* {{{ ngx_http_upload_append_str */
 ngx_http_upload_append_str(ngx_http_upload_ctx_t *u, ngx_buf_t *b, ngx_chain_t *cl, ngx_str_t *s)
 {
@@ -1225,6 +1309,7 @@ ngx_http_upload_create_loc_conf(ngx_conf_t *cf)
     conf->max_output_body_len = NGX_CONF_UNSET_SIZE;
     conf->max_file_size = NGX_CONF_UNSET;
     conf->limit_rate = NGX_CONF_UNSET_SIZE;
+    conf->kp = NGX_CONF_UNSET_UINT;
 
     /*
      * conf->field_templates,
@@ -1319,6 +1404,12 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     if(conf->cleanup_statuses == NULL) {
         conf->cleanup_statuses = prev->cleanup_statuses;
     }
+
+    if(conf->limit_rate_templates == NULL) {
+        conf->limit_rate_templates = prev->limit_rate_templates;
+    }
+
+    ngx_conf_merge_value(conf->kp, prev->kp, 0);
 
     return NGX_CONF_OK;
 } /* }}} */
@@ -1798,6 +1889,55 @@ ngx_http_upload_cleanup(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     return NGX_CONF_OK;
 } /* }}} */
 
+
+static char*
+ngx_http_upload_limit_rate(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+    ngx_http_upload_loc_conf_t           *upcf = conf;
+    ngx_str_t                            *value;
+    ngx_int_t                             i;
+    ngx_http_upload_limit_rate_template_t *template;
+
+    value = cf->args->elts;
+
+    if(value[1].data[0] != '$') {
+        return ngx_conf_set_size_slot(cf, cmd, conf);
+    }
+
+    upcf->limit_rate_templates = ngx_array_create(cf->pool,
+        cf->args->nelts, sizeof(ngx_http_upload_limit_rate_template_t));
+
+    if(upcf->limit_rate_templates == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    for(i = 1;i<cf->args->nelts;i++) {
+        if (value[i].data[0] != '$') {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid variable name \"%V\"", &value[i]);
+            return NGX_CONF_ERROR;
+        }
+
+        template = ngx_array_push(upcf->limit_rate_templates);
+        if(template == NULL) {
+            return NGX_CONF_ERROR;
+        }
+
+        value[i].len--;
+        value[i].data++;
+
+        template->variable_name.data = value[i].data;
+        template->variable_name.len = value[i].len;
+
+        template->variable_index = ngx_http_get_variable_index(cf, &value[i]);
+        if(template->variable_index == NGX_ERROR) {
+            template->variable_key = ngx_hash_strlow(value[i].data, value[i].data, value[i].len);
+        }
+    }
+
+    return NGX_CONF_OK;
+}
+
 static char * /* {{{ ngx_http_upload_pass */
 ngx_http_upload_pass(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -2022,6 +2162,32 @@ ngx_http_read_upload_client_request_body_handler(ngx_http_request_t *r)
     ngx_http_upload_ctx_t     *u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
     ngx_event_t               *rev = r->connection->read;
     ngx_http_core_loc_conf_t  *clcf;
+    size_t                     limit_rate = 0;
+    ssize_t                    diff;
+    ngx_http_upload_loc_conf_t  *ulcf;
+
+    ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
+
+    if(ngx_http_upload_eval_limit_rate(r, ulcf, &limit_rate) == NGX_OK) {
+        if(limit_rate) {
+            u->d_limit_rate = limit_rate;
+        }
+    }
+
+    if(u->limit_rate != u->d_limit_rate) {
+        if(u->d_limit_rate != 0) {
+            if(u->d_limit_rate > u->limit_rate) {
+                u->limit_rate += ((u->d_limit_rate - u->limit_rate) * ulcf->kp) / 1000;
+            else {
+                u->limit_rate -= ((u->limit_rate - u->d_limit_rate) * ulcf->kp) / 1000;
+            }
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                           "upload: rate limit is set to %uz", u->limit_rate);
+        }
+        else {
+            u->limit_rate = 0;
+        }
+    }
 
     if (rev->timedout) {
         if(!rev->delayed) {
