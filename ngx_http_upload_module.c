@@ -116,7 +116,6 @@ typedef struct {
     ngx_flag_t                    forward_args;
     ngx_flag_t                    tame_arrays;
     size_t                        limit_rate;
-    ngx_int_t                     kp;
 
     ngx_array_t                   *limit_rate_templates;
 
@@ -175,6 +174,7 @@ typedef struct ngx_http_upload_ctx_s {
     size_t              limit_rate;
     size_t              d_limit_rate;
     ssize_t             received;
+    ssize_t             received_offset;
 
     ngx_pool_cleanup_t          *cln;
 
@@ -483,17 +483,6 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
        offsetof(ngx_http_upload_loc_conf_t, tame_arrays),
        NULL },
 
-    /*
-     * Specifies the propotional term for dynamic rate limit regulator
-     */
-    { ngx_string("upload_kp"),
-      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_HTTP_LIF_CONF
-                        |NGX_CONF_TAKE1,
-      ngx_conf_set_num_slot,
-      NGX_HTTP_LOC_CONF_OFFSET,
-      offsetof(ngx_http_upload_loc_conf_t, kp),
-      NULL },
-
       ngx_null_command
 }; /* }}} */
 
@@ -651,6 +640,7 @@ ngx_http_upload_handler(ngx_http_request_t *r)
     u->output_body_len = 0;
     u->no_content = 1;
     u->received = 0;
+    u->received_offset = 0;
     u->ordinal = 0;
 
     if(ngx_http_upload_eval_limit_rate(r, ulcf, &limit_rate) == NGX_OK) {
@@ -1309,7 +1299,6 @@ ngx_http_upload_create_loc_conf(ngx_conf_t *cf)
     conf->max_output_body_len = NGX_CONF_UNSET_SIZE;
     conf->max_file_size = NGX_CONF_UNSET;
     conf->limit_rate = NGX_CONF_UNSET_SIZE;
-    conf->kp = NGX_CONF_UNSET_UINT;
 
     /*
      * conf->field_templates,
@@ -1408,8 +1397,6 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     if(conf->limit_rate_templates == NULL) {
         conf->limit_rate_templates = prev->limit_rate_templates;
     }
-
-    ngx_conf_merge_value(conf->kp, prev->kp, 0);
 
     return NGX_CONF_OK;
 } /* }}} */
@@ -2165,6 +2152,7 @@ ngx_http_read_upload_client_request_body_handler(ngx_http_request_t *r)
     size_t                     limit_rate = 0;
     ssize_t                    diff;
     ngx_http_upload_loc_conf_t  *ulcf;
+    time_t                     elapsed;
 
     ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
 
@@ -2176,11 +2164,12 @@ ngx_http_read_upload_client_request_body_handler(ngx_http_request_t *r)
 
     if(u->limit_rate != u->d_limit_rate) {
         if(u->d_limit_rate != 0) {
-            if(u->d_limit_rate > u->limit_rate) {
-                u->limit_rate += ((u->d_limit_rate - u->limit_rate) * ulcf->kp) / 1000;
-            else {
-                u->limit_rate -= ((u->limit_rate - u->d_limit_rate) * ulcf->kp) / 1000;
-            }
+            elapsed = ngx_time() - r->start_sec + 1;
+
+            u->received_offset = (u->limit_rate - u->d_limit_rate) * elapsed + u->received_offset;
+
+            u->limit_rate = u->d_limit_rate;
+
             ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                            "upload: rate limit is set to %uz", u->limit_rate);
         }
@@ -2283,7 +2272,7 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
             }
 
             if (u->limit_rate) {
-                limit = u->limit_rate * (ngx_time() - r->start_sec + 1) - u->received;
+                limit = u->limit_rate * (ngx_time() - r->start_sec + 1) - u->received + u->received_offset;
 
                 if (limit < 0) {
                     c->read->delayed = 1;
