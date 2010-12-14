@@ -711,13 +711,13 @@ ngx_http_upload_handler(ngx_http_request_t *r)
     ngx_http_upload_ctx_t     *u;
     ngx_int_t                 rc;
 
-    ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
-
-    if((r->method & NGX_HTTP_OPTIONS) && ulcf->resumable_uploads)
+    if(r->method & NGX_HTTP_OPTIONS)
         return ngx_http_upload_options_handler(r);
 
     if (!(r->method & NGX_HTTP_POST))
         return NGX_HTTP_NOT_ALLOWED;
+
+    ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
 
     u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
 
@@ -791,30 +791,32 @@ static ngx_int_t ngx_http_upload_add_headers(ngx_http_request_t *r, ngx_http_upl
     ngx_table_elt_t                      *h;
     ngx_uint_t                           i;
 
-    t = ulcf->header_templates->elts;
-    for(i = 0; i < ulcf->header_templates->nelts; i++) {
-        if(ngx_http_complex_value(r, t->name, &name) != NGX_OK) {
-            return NGX_ERROR;
-        }
-
-        if(ngx_http_complex_value(r, t->value, &value) != NGX_OK) {
-            return NGX_ERROR;
-        }
-
-        if(name.len != 0 && value.len != 0) {
-            h = ngx_list_push(&r->headers_out.headers);
-            if(h == NULL) {
+    if(ulcf->header_templates != NULL) {
+        t = ulcf->header_templates->elts;
+        for(i = 0; i < ulcf->header_templates->nelts; i++) {
+            if(ngx_http_complex_value(r, t->name, &name) != NGX_OK) {
                 return NGX_ERROR;
             }
 
-            h->hash = 1;
-            h->key.len = name.len;
-            h->key.data = name.data;
-            h->value.len = value.len;
-            h->value.data = value.data;
-        }
+            if(ngx_http_complex_value(r, t->value, &value) != NGX_OK) {
+                return NGX_ERROR;
+            }
 
-        t++;
+            if(name.len != 0 && value.len != 0) {
+                h = ngx_list_push(&r->headers_out.headers);
+                if(h == NULL) {
+                    return NGX_ERROR;
+                }
+
+                h->hash = 1;
+                h->key.len = name.len;
+                h->key.data = name.data;
+                h->value.len = value.len;
+                h->value.data = value.data;
+            }
+
+            t++;
+        }
     }
 
     return NGX_OK;
@@ -851,12 +853,12 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
     ngx_str_t                   dummy = ngx_string("<ngx_upload_module_dummy>");
     ngx_table_elt_t             *h;
 
+    if(ngx_http_upload_add_headers(r, ulcf) != NGX_OK) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
     if(ctx->prevent_output) {
         r->headers_out.status = NGX_HTTP_CREATED;
-
-        if(ngx_http_upload_add_headers(r, ulcf) != NGX_OK) {
-            return NGX_HTTP_INTERNAL_SERVER_ERROR;
-        }
 
         /*
          * Add range header and body
