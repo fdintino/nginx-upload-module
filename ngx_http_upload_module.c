@@ -243,6 +243,7 @@ typedef struct ngx_http_upload_ctx_s {
 } ngx_http_upload_ctx_t;
 
 static ngx_int_t ngx_http_upload_handler(ngx_http_request_t *r);
+static ngx_int_t ngx_http_upload_options_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r);
 
 static void *ngx_http_upload_create_loc_conf(ngx_conf_t *cf);
@@ -710,10 +711,13 @@ ngx_http_upload_handler(ngx_http_request_t *r)
     ngx_http_upload_ctx_t     *u;
     ngx_int_t                 rc;
 
+    ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
+
+    if((r->method & NGX_HTTP_OPTIONS) && ulcf->resumable_uploads)
+        return ngx_http_upload_options_handler(r);
+
     if (!(r->method & NGX_HTTP_POST))
         return NGX_HTTP_NOT_ALLOWED;
-
-    ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
 
     u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
 
@@ -814,6 +818,24 @@ static ngx_int_t ngx_http_upload_add_headers(ngx_http_request_t *r, ngx_http_upl
     }
 
     return NGX_OK;
+} /* }}} */
+
+static ngx_int_t ngx_http_upload_options_handler(ngx_http_request_t *r) { /* {{{ */
+    ngx_http_upload_loc_conf_t *ulcf;
+
+    ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
+
+    r->headers_out.status = NGX_HTTP_OK;
+
+    if(ngx_http_upload_add_headers(r, ulcf) != NGX_OK) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    r->header_only = 1;
+    r->headers_out.content_length_n = 0;
+    r->allow_ranges = 0;
+
+    return ngx_http_send_header(r);
 } /* }}} */
 
 static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
