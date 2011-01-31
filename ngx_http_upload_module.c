@@ -149,6 +149,7 @@ typedef struct {
     ngx_flag_t                    forward_args;
     ngx_flag_t                    tame_arrays;
     ngx_flag_t                    resumable_uploads;
+    ngx_flag_t                    empty_field_names;
     size_t                        limit_rate;
 
     unsigned int                  md5:1;
@@ -585,6 +586,17 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
        ngx_conf_set_flag_slot,
        NGX_HTTP_LOC_CONF_OFFSET,
        offsetof(ngx_http_upload_loc_conf_t, resumable_uploads),
+       NULL },
+
+     /*
+      * Specifies whether empty field names are allowed
+      */
+     { ngx_string("upload_empty_fiels_names"),
+       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_HTTP_LIF_CONF
+                         |NGX_CONF_FLAG,
+       ngx_conf_set_flag_slot,
+       NGX_HTTP_LOC_CONF_OFFSET,
+       offsetof(ngx_http_upload_loc_conf_t, empty_field_names),
        NULL },
 
     /*
@@ -1236,7 +1248,10 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
 #if (NGX_PCRE)
                 rc = ngx_regex_exec(f[i].regex, &u->field_name, NULL, 0);
 
-                if (rc != NGX_REGEX_NO_MATCHED && rc < 0) {
+                /* Modified by Naren to work around iMovie and Quicktime which send empty values Added:  &&  u->field_name.len > 0 */
+                if ((ulcf->empty_field_names && rc != NGX_REGEX_NO_MATCHED && rc < 0 && u->field_name.len != 0)
+                    || (!ulcf->empty_field_names && rc != NGX_REGEX_NO_MATCHED && rc < 0))
+                {
                     return NGX_UPLOAD_SCRIPTERROR;
                 }
 
@@ -1252,7 +1267,7 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
             }
         }
 
-        if(pass_field && u->field_name.len > 0) { 
+        if(pass_field && u->field_name.len != 0) { 
             /*
              * Here we do a small hack: the content of a non-file field
              * is not known until ngx_http_upload_flush_output_buffer
@@ -1885,6 +1900,7 @@ ngx_http_upload_create_loc_conf(ngx_conf_t *cf)
     conf->forward_args = NGX_CONF_UNSET;
     conf->tame_arrays = NGX_CONF_UNSET;
     conf->resumable_uploads = NGX_CONF_UNSET;
+    conf->empty_field_names = NGX_CONF_UNSET;
 
     conf->buffer_size = NGX_CONF_UNSET_SIZE;
     conf->merge_buffer_size = NGX_CONF_UNSET_SIZE;
@@ -1982,6 +1998,11 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     if(conf->resumable_uploads == NGX_CONF_UNSET) {
         conf->resumable_uploads = (prev->resumable_uploads != NGX_CONF_UNSET) ?
             prev->resumable_uploads : 0;
+    }
+
+    if(conf->empty_field_names == NGX_CONF_UNSET) {
+        conf->empty_field_names = (prev->empty_field_names != NGX_CONF_UNSET) ?
+            prev->empty_field_names : 0;
     }
 
     if(conf->field_templates == NULL) {
