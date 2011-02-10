@@ -2632,9 +2632,9 @@ ngx_http_upload_cleanup(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             hi = lo = status;
         }
 
-        if (lo < 400 || hi > 599) {
+        if (lo < 200 || hi > 599) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                               "value(s) \"%V\" must be between 400 and 599",
+                               "value(s) \"%V\" must be between 200 and 599",
                                &value[i]);
             return NGX_CONF_ERROR;
         }
