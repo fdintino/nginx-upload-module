@@ -3478,6 +3478,14 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
                     return NGX_HTTP_REQUEST_ENTITY_TOO_LARGE;
                 }
 
+                if( (upload_ctx->content_range_n.end - upload_ctx->content_range_n.start + 1)
+                    != headers_in->content_length_n) 
+                {
+                    ngx_log_error(NGX_LOG_ERR, upload_ctx->log, 0,
+                                  "range length is not equal to content length");
+                    return NGX_HTTP_RANGE_NOT_SATISFIABLE;
+                }
+
                 upload_ctx->partial_content = 1;
             }
         }
