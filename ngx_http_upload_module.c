@@ -1050,7 +1050,7 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
     ngx_http_upload_loc_conf_t  *ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
 
     ngx_file_t  *file = &u->output_file;
-    ngx_path_t  *path = (u->session_id.len == 0 ? ulcf->store_path : ulcf->state_store_path);
+    ngx_path_t  *path = ulcf->store_path;
     uint32_t    n;
     ngx_uint_t  i;
     ngx_int_t   rc;
