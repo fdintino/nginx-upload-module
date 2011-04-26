@@ -729,10 +729,16 @@ ngx_http_upload_cleanup_part(void *data)
     ngx_http_upload_range_t     content_range_n;
 
     u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
+    if(!u){
+        return;
+    }
+    
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "cleanup http upload request, out offset: %d", u->output_file.offset);
     
-    if(u->output_file.offset == u->content_range_n.end + 1){
+    if(!u->output_file.offset || 
+        u->output_file.offset == u->content_range_n.end + 1)
+    {
         return;
     }
 
