@@ -1910,6 +1910,10 @@ ngx_http_upload_merge_ranges(ngx_http_upload_ctx_t *u, ngx_http_upload_range_t *
         if(ngx_http_upload_buf_merge_range(&ms, &range_to_merge_n) != NGX_OK) {
             ngx_log_error(NGX_LOG_ERR, u->log, 0,
                           "state file \"%V\" is corrupt", &state_file->name);
+            if(ngx_delete_file(&state_file->name) == NGX_FILE_ERROR) { 
+                ngx_log_error(NGX_LOG_ERR, u->log, ngx_errno, 
+                    "failed to remove state file \"%s\"", state_file->name);
+            }
             rc = NGX_ERROR;
             goto failed;
         }
