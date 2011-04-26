@@ -737,7 +737,7 @@ ngx_http_upload_cleanup_part(void *data)
     }
 
     content_range_n.start = u->content_range_n.start;
-    content_range_n.end = u->content_range_n.start + u->output_file.offset - 1;
+    content_range_n.end = u->output_file.offset - 1;
     content_range_n.total = u->content_range_n.total;
 
     rc = ngx_http_upload_merge_ranges(u, &content_range_n);
