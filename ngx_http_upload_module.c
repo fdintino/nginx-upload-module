@@ -736,7 +736,7 @@ ngx_http_upload_cleanup_part(void *data)
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "cleanup http upload request, out offset: %d", u->output_file.offset);
     
-    if(!u->output_file.offset || 
+    if(!u->raw_input || !u->output_file.offset || 
         u->output_file.offset == u->content_range_n.end + 1)
     {
         return;
