@@ -438,7 +438,7 @@ ngx_http_upload_handler(ngx_http_request_t *r)
 
     ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
 
-    if (!(r->method & NGX_HTTP_POST))
+    if (!(r->method & (NGX_HTTP_POST | NGX_HTTP_PUT)))
         return NGX_DECLINED;
 
     u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
