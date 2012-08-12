@@ -257,6 +257,8 @@ typedef struct ngx_http_upload_ctx_s {
     unsigned int        raw_input:1;
 } ngx_http_upload_ctx_t;
 
+ngx_int_t ngx_http_test_expect(ngx_http_request_t *r);
+
 static ngx_int_t ngx_http_upload_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_upload_options_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r);
@@ -837,6 +839,11 @@ ngx_http_upload_handler(ngx_http_request_t *r)
         upload_shutdown_ctx(u);
         return rc;
     }
+
+ if (ngx_http_test_expect(r) != NGX_OK) {
+ upload_shutdown_ctx(u);
+ return NGX_HTTP_INTERNAL_SERVER_ERROR;
+ }
 
     if(upload_start(u, ulcf) != NGX_OK)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
