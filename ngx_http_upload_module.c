@@ -138,7 +138,7 @@ typedef struct ngx_http_upload_cleanup_s {
 typedef struct {
     ngx_str_t                     url;
     ngx_http_complex_value_t      *url_cv;
-    ngx_path_t                    *state_store_path;
+    ngx_http_upload_path_t        *state_store_path;
     ngx_http_upload_path_t        *store_path;
     ngx_uint_t                    store_access;
     size_t                        buffer_size;
@@ -251,6 +251,7 @@ typedef struct ngx_http_upload_ctx_s {
     ngx_http_upload_sha512_ctx_t *sha512_ctx;
     uint32_t                    crc32;    
     ngx_path_t          *store_path;
+    ngx_path_t          *state_store_path;
 
     unsigned int        first_part:1;
     unsigned int        discard_data:1;
@@ -320,6 +321,7 @@ static char *ngx_http_upload_set_form_field(ngx_conf_t *cf, ngx_command_t *cmd,
 static char *ngx_http_upload_add_header(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static ngx_int_t ngx_http_upload_eval_path(ngx_http_request_t *r);
+static ngx_int_t ngx_http_upload_eval_state_path(ngx_http_request_t *r);
 static char *ngx_http_upload_pass_form_field(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static char *ngx_http_upload_set_path_slot(ngx_conf_t *cf, ngx_command_t *cmd,
@@ -446,7 +448,7 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
      */
     { ngx_string("upload_state_store"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1234,
-      ngx_conf_set_path_slot,
+      ngx_http_upload_set_path_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_upload_loc_conf_t, state_store_path),
       NULL },
@@ -859,6 +861,13 @@ ngx_http_upload_handler(ngx_http_request_t *r)
         return rc;
     }
 
+    rc = ngx_http_upload_eval_state_path(r);
+
+    if(rc != NGX_OK) {
+        upload_shutdown_ctx(u);
+        return rc;
+    }
+
     if (ngx_http_upload_test_expect(r) != NGX_OK) {
         upload_shutdown_ctx(u);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -940,6 +949,37 @@ ngx_http_upload_eval_path(ngx_http_request_t *r) {
     }
     else{
         u->store_path = ulcf->store_path->path;
+    }
+
+    return NGX_OK;
+} /* }}} */
+
+static ngx_int_t /* {{{  */
+ngx_http_upload_eval_state_path(ngx_http_request_t *r) {
+    ngx_http_upload_ctx_t       *u;
+    ngx_http_upload_loc_conf_t  *ulcf;
+    ngx_str_t                   value;
+
+    ulcf = ngx_http_get_module_loc_conf(r, ngx_http_upload_module);
+    u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
+
+    if(ulcf->state_store_path->is_dynamic) {
+        u->state_store_path = ngx_pcalloc(r->pool, sizeof(ngx_path_t));
+        if(u->store_path == NULL) {
+            return NGX_ERROR;
+        }
+
+        ngx_memcpy(u->state_store_path, ulcf->state_store_path->path, sizeof(ngx_path_t));
+
+        if(ngx_http_complex_value(r, &ulcf->state_store_path->dynamic, &value) != NGX_OK) {
+            return NGX_ERROR;
+        }
+
+        u->state_store_path->name.data = value.data;
+        u->state_store_path->name.len = value.len;
+    }
+    else{
+        u->state_store_path = ulcf->state_store_path->path;
     }
 
     return NGX_OK;
@@ -2067,7 +2107,7 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
                                   prev->store_path,
                                   &ngx_http_upload_temp_path);
 
-        ngx_conf_merge_path_value(cf,
+        ngx_http_upload_merge_path_value(cf,
                                   &conf->state_store_path,
                                   prev->state_store_path,
                                   &ngx_http_upload_temp_path);
