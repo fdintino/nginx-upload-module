@@ -1202,6 +1202,7 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
 
     ngx_file_t  *file = &u->output_file;
     ngx_path_t  *path = u->store_path;
+    ngx_path_t  *state_path = u->state_store_path;
     uint32_t    n;
     ngx_uint_t  i;
     ngx_int_t   rc;
@@ -1241,6 +1242,7 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
                            "hashed path: %s", file->name.data);
 
             if(u->partial_content) {
+                ngx_file_t *state_file = &u->state_file;
                 if(u->merge_buffer == NULL) {
                     u->merge_buffer = ngx_palloc(r->pool, ulcf->merge_buffer_size);
 
@@ -1248,21 +1250,20 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
                         return NGX_UPLOAD_NOMEM;
                 }
 
-                u->state_file.name.len = file->name.len + sizeof(".state") - 1;
-                u->state_file.name.data = ngx_palloc(u->request->pool, u->state_file.name.len + 1);
+                state_file->name.len = state_path->name.len + 1 + state_path->len + u->session_id.len + sizeof(".state");
+                state_file->name.data = ngx_palloc(u->request->pool, state_file->name.len + 1);
 
-                if(u->state_file.name.data == NULL)
+                if(state_file->name.data == NULL)
                     return NGX_UPLOAD_NOMEM;
 
-                ngx_memcpy(u->state_file.name.data, file->name.data, file->name.len);
+                ngx_memcpy(state_file->name.data, state_path->name.data, state_path->name.len);
+                (void) ngx_sprintf(state_file->name.data + state_path->name.len + 1 + state_path->len,
+                        "%V.state%Z", &u->session_id);
 
-                /*
-                 * NOTE: we add terminating zero for system calls
-                 */
-                ngx_memcpy(u->state_file.name.data + file->name.len, ".state", sizeof(".state") - 1 + 1);
+                ngx_create_hashed_filename(state_path, state_file->name.data, state_file->name.len);
 
                 ngx_log_debug1(NGX_LOG_DEBUG_CORE, file->log, 0,
-                               "hashed path of state file: %s", u->state_file.name.data);
+                               "hashed path of state file: %s", state_file->name.data);
             }
 
             file->fd = ngx_open_file(file->name.data, NGX_FILE_WRONLY, NGX_FILE_CREATE_OR_OPEN, ulcf->store_access);
