@@ -4005,8 +4005,8 @@ ngx_http_upload_parse_range(ngx_str_t *range, ngx_http_upload_range_t *range_n)
         return NGX_ERROR;
     }
 
-    if(range_n->start >= range_n->end || range_n->start >= range_n->total
-        || range_n->end > range_n->total)
+    if(range_n->start > range_n->end || range_n->start >= range_n->total
+        || range_n->end >= range_n->total)
     {
         return NGX_ERROR;
     }
