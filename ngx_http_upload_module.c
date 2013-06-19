@@ -3923,6 +3923,11 @@ static ngx_int_t upload_parse_request_headers(ngx_http_upload_ctx_t *upload_ctx,
         boundary_start_ptr += sizeof(BOUNDARY_STRING) - 1;
         boundary_end_ptr = boundary_start_ptr + strcspn((char*)boundary_start_ptr, " ;\n\r");
 
+        if (sizeof(boundary_start_ptr) >= 2 && boundary_start_ptr[0] == '"' && *(boundary_end_ptr - 1) == '"') {
+            boundary_start_ptr++;
+            boundary_end_ptr--;
+        }
+
         if(boundary_end_ptr == boundary_start_ptr) {
             ngx_log_debug0(NGX_LOG_DEBUG_CORE, upload_ctx->log, 0,
                            "boundary is empty");
