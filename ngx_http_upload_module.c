@@ -233,6 +233,7 @@ typedef struct ngx_http_upload_ctx_s {
     ngx_chain_t         *chain;
     ngx_chain_t         *last;
     ngx_chain_t         *checkpoint;
+    ngx_chain_t         *to_write;
     size_t              output_body_len;
     size_t              limit_rate;
     ssize_t             received;
@@ -2975,7 +2976,7 @@ ngx_http_read_upload_client_request_body(ngx_http_request_t *r) {
 
             /* the whole request body may be placed in r->header_in */
 
-            rb->to_write = rb->bufs;
+            u->to_write = rb->bufs;
 
             r->read_event_handler = ngx_http_read_upload_client_request_body_handler;
 
@@ -3034,7 +3035,7 @@ ngx_http_read_upload_client_request_body(ngx_http_request_t *r) {
 
     *next = cl;
 
-    rb->to_write = rb->bufs;
+    u->to_write = rb->bufs;
 
     r->read_event_handler = ngx_http_read_upload_client_request_body_handler;
 
@@ -3116,7 +3117,7 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
         for ( ;; ) {
             if (rb->buf->last == rb->buf->end) {
 
-                rc = ngx_http_process_request_body(r, rb->to_write);
+                rc = ngx_http_process_request_body(r, u->to_write);
 
                 switch(rc) {
                     case NGX_OK:
@@ -3132,7 +3133,7 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
                         return NGX_HTTP_INTERNAL_SERVER_ERROR;
                 }
 
-                rb->to_write = rb->bufs->next ? rb->bufs->next : rb->bufs;
+                u->to_write = rb->bufs->next ? rb->bufs->next : rb->bufs;
                 rb->buf->last = rb->buf->start;
             }
 
@@ -3224,7 +3225,7 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
         ngx_del_timer(c->read);
     }
 
-    rc = ngx_http_process_request_body(r, rb->to_write);
+    rc = ngx_http_process_request_body(r, u->to_write);
 
     switch(rc) {
         case NGX_OK:
