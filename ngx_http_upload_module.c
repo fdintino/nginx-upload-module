@@ -1251,7 +1251,7 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
                         return NGX_UPLOAD_NOMEM;
                 }
 
-                state_file->name.len = state_path->name.len + 1 + state_path->len + u->session_id.len + sizeof(".state");
+                state_file->name.len = state_path->name.len + 1 + state_path->len + u->session_id.len + sizeof(".state")-1;
                 state_file->name.data = ngx_palloc(u->request->pool, state_file->name.len + 1);
 
                 if(state_file->name.data == NULL)
