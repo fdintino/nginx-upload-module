@@ -3050,7 +3050,7 @@ ngx_http_upload_merge_path_value(ngx_conf_t *cf, ngx_http_upload_path_t **path, 
         return NGX_CONF_OK;
     }
 
-    *path = ngx_palloc(cf->pool, sizeof(ngx_http_upload_path_t));
+    *path = ngx_pcalloc(cf->pool, sizeof(ngx_http_upload_path_t));
     if(*path == NULL) {
         return NGX_CONF_ERROR;
     }
