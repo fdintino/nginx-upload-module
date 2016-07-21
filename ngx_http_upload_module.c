@@ -9,14 +9,12 @@
 #include <nginx.h>
 
 #include <openssl/md5.h>
-#include <ngx_md5.h>
 
 #define  MD5Init    MD5_Init
 #define  MD5Update  MD5_Update
 #define  MD5Final   MD5_Final
 
 #include <openssl/sha.h>
-#include <ngx_sha1.h>
 
 #define MULTIPART_FORM_DATA_STRING              "multipart/form-data"
 #define BOUNDARY_STRING                         "boundary="
