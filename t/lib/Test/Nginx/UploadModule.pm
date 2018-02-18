@@ -5,6 +5,7 @@ use warnings;
 
 my $PORT = $ENV{TEST_NGINX_UPSTREAM_PORT} ||= 12345;
 $ENV{TEST_NGINX_UPLOAD_PATH} ||= '/tmp/upload';
+$ENV{TEST_NGINX_UPLOAD_FILE} = $ENV{TEST_NGINX_UPLOAD_PATH} . "/test_data.txt";
 
 
 use base 'Exporter';
@@ -32,6 +33,9 @@ sub make_upload_paths {
     for (my $i = 0; $i < 10; $i++) {
         mkpath("${ENV{TEST_NGINX_UPLOAD_PATH}}/store/$i");
     }
+    open(my $fh, ">", $ENV{TEST_NGINX_UPLOAD_FILE});
+    print $fh ('x' x 131072);
+    close($fh);
 }
 
 add_cleanup_handler(sub {
