@@ -5,7 +5,7 @@ use File::Basename qw(dirname);
 use lib dirname(__FILE__) . "/lib";
 use Cwd qw(abs_path);
 
-use Test::Nginx::Socket tests => 11;
+use Test::Nginx::Socket tests => 20;
 use Test::Nginx::UploadModule;
 
 $ENV{TEST_DIR} = abs_path(dirname(__FILE__));
@@ -127,3 +127,42 @@ upload_tmp_path = ${ENV{TEST_NGINX_UPLOAD_PATH}}/store/3/0000000003
 }]
 --- upload_file_like eval
 qr/^(??{'x' x 262144})$/
+
+=== Test 4: http2 upload_limit_rate
+--- skip_nginx
+9: < 1.10.0
+--- http2
+--- config
+location = /upload/ {
+    upload_pass @upstream;
+    upload_resumable on;
+    upload_set_form_field "upload_tmp_path" "$upload_tmp_path";
+    upload_limit_rate 32768;
+}
+--- timeout: 5
+--- more_headers eval
+[qq{X-Content-Range: bytes 0-131071/262144
+Session-ID: 0000000004
+Content-Type: text/plain
+Content-Disposition: form-data; name="file"; filename="test.txt"},
+qq{X-Content-Range: bytes 131072-262143/262144
+Session-ID: 0000000004
+Content-Type: text/plain
+Content-Disposition: form-data; name="file"; filename="test.txt"}]
+--- request eval
+[["POST /upload/\r\n",
+"@" . $ENV{TEST_NGINX_UPLOAD_FILE}],
+["POST /upload/\r\n",
+"@" . $ENV{TEST_NGINX_UPLOAD_FILE}]]
+--- error_code eval
+[201, 200]
+--- response_body eval
+["0-131071/262144", qq{upload_tmp_path = ${ENV{TEST_NGINX_UPLOAD_PATH}}/store/4/0000000004
+}]
+--- upload_file_like eval
+qr/^(??{'x' x 262144})$/
+--- access_log eval
+# should have taken 4 seconds, with 1 second possible error
+# (Test::Nginx::UploadModule::http_config adds request time to the end of
+# the access log)
+[qr/[34]\.\d\d\d$/, qr/[34]\.\d\d\d$/]

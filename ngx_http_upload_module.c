@@ -935,12 +935,16 @@ ngx_http_upload_read_event_handler(ngx_http_request_t *r)
     ngx_http_request_body_t    *rb;
     ngx_int_t                   rc;
     ngx_chain_t                *in;
+    ssize_t                     n, limit, buf_read_size, next_buf_size, remaining;
+    ngx_msec_t                  delay;
+    ngx_event_t                *rev;
 
     if (ngx_exiting || ngx_terminate) {
         ngx_http_finalize_request(r, NGX_HTTP_CLOSE);
         return;
     }
 
+    rev = r->connection->read;
     rb = r->request_body;
 
     if (rb == NULL) {
@@ -948,21 +952,27 @@ ngx_http_upload_read_event_handler(ngx_http_request_t *r)
         return;
     }
 
+    r->read_event_handler = ngx_http_upload_read_event_handler;
+
     u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
 
-    rc = NGX_OK;
-
-    in = rb->bufs;
-
     for ( ;; ) {
-        while (in) {
-            rc = u->data_handler(u, in->buf->pos, in->buf->last);
+        buf_read_size = 0;
+
+        for (in = rb->bufs ; in; in = in->next) {
+            n = in->buf->last - in->buf->pos;
+
+            rc = u->data_handler(u, in->buf->pos, in->buf->pos + n);
+
+            in->buf->pos += n;
+            u->received += n;
+            buf_read_size += n;
+
             if (rc != NGX_OK) {
                 goto err;
             }
-            in->buf->pos = in->buf->last;
-            in = in->next;
         }
+        rb->bufs = NULL;
 
         // We're done reading the request body, break out of loop
         if (!r->reading_body) {
@@ -974,18 +984,42 @@ ngx_http_upload_read_event_handler(ngx_http_request_t *r)
             }
         }
 
+        // Check whether we have exceeded limit_rate and should delay the next
+        // buffer read
+        if (u->limit_rate) {
+            remaining = ((ssize_t) r->headers_in.content_length_n) - u->received;
+            next_buf_size = (buf_read_size > remaining) ? remaining : buf_read_size;
+            limit = u->limit_rate * (ngx_time() - r->start_sec + 1) - (u->received + next_buf_size);
+            if (limit < 0) {
+                rev->delayed = 1;
+                ngx_add_timer(rev, (ngx_msec_t) ((limit * -1000 / u->limit_rate) + 1));
+                return;
+            }
+        }
+
         rc = ngx_http_read_unbuffered_request_body(r);
 
         if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
             goto err;
         }
 
-        in = rb->bufs;
-        rb->bufs = NULL;
-
-        if (in == NULL) {
-            r->read_event_handler = ngx_http_upload_read_event_handler;
+        if (rb->bufs == NULL) {
             return;
+        }
+
+        // Check whether we should delay processing the latest request body
+        // buffers to stay within limit_rate
+        if (u->limit_rate) {
+            buf_read_size = 0;
+            for (in = rb->bufs ; in; in = in->next) {
+                buf_read_size += (in->buf->last - in->buf->pos);
+            }
+            delay = (ngx_msec_t) (buf_read_size * 1000 / u->limit_rate + 1);
+            if (delay > 0) {
+                rev->delayed = 1;
+                ngx_add_timer(rev, delay);
+                return;
+            }
         }
     }
 
