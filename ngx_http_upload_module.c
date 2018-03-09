@@ -8,6 +8,22 @@
 #include <ngx_http.h>
 #include <nginx.h>
 
+#if nginx_version >= 1011002
+
+#include <ngx_md5.h>
+
+typedef ngx_md5_t MD5_CTX;
+
+#define MD5Init ngx_md5_init
+#define MD5Update ngx_md5_update
+#define MD5Final ngx_md5_final
+
+#define MD5_DIGEST_LENGTH 16
+
+#include <openssl/sha.h>
+
+#else
+
 #if (NGX_HAVE_OPENSSL_MD5_H)
 #include <openssl/md5.h>
 #else
@@ -24,6 +40,9 @@
 #include <openssl/sha.h>
 #else
 #include <sha.h>
+#endif
+
+
 #endif
 
 #define MULTIPART_FORM_DATA_STRING              "multipart/form-data"
