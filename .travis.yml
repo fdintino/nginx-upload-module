@@ -1,0 +1,79 @@
+sudo: required
+language: c
+compiler: gcc
+dist: trusty
+
+cache:
+  directories:
+    - perl5
+    - dl
+
+addons:
+  apt:
+    packages:
+      - libssl-dev
+
+env:
+  global:
+    - TESTNGINX_VER=12152a5
+    - PATH=/usr/local/bin:$TRAVIS_BUILD_DIR/nginx/objs:$PATH
+    - CURL=7.58.0
+    - NGHTTP2=1.24.0
+  matrix:
+    - NGINX_VERSION=1.9.15
+    - NGINX_VERSION=1.11.13
+    - NGINX_VERSION=1.12.2
+    - NGINX_VERSION=1.13.8
+
+before_install:
+  - mkdir -p dl
+  - |
+    if [ ! -f dl/nghttp2-${NGHTTP2}.tar.gz ]; then
+      (cd dl && curl -O -L https://github.com/nghttp2/nghttp2/releases/download/v${NGHTTP2}/nghttp2-${NGHTTP2}.tar.gz)
+    fi
+  - |
+    if [ ! -f dl/curl-${CURL}.tar.gz ]; then
+      (cd dl && curl -O -L https://curl.haxx.se/download/curl-${CURL}.tar.gz)
+    fi
+  - |
+    if [ ! -f dl/nginx-${NGINX_VERSION}.tar.gz ]; then
+      curl -o dl/nginx-${NGINX_VERSION}.tar.gz -L http://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz;
+    fi
+  - |
+    if [ ! -f dl/test-nginx-${TESTNGINX_VER}.tar.gz ]; then
+      curl -o dl/test-nginx-${TESTNGINX_VER}.tar.gz -L "https://github.com/openresty/test-nginx/archive/${TESTNGINX_VER}.tar.gz";
+    fi
+  - if [ ! -f dl/cpanm ]; then curl -o dl/cpanm https://cpanmin.us/; chmod +x dl/cpanm; fi
+  - |
+    if [ ! -e dl/nghttp2-${NGHTTP2} ]; then
+      (cd dl && tar -zxf nghttp2-${NGHTTP2}.tar.gz)
+    fi
+    (cd dl/nghttp2-${NGHTTP2} &&
+      ./configure --prefix=/usr --disable-threads &&
+      make && sudo make install)
+  - |
+    if [ ! -e dl/curl-${CURL} ]; then
+      (cd dl && tar -zxf curl-${CURL}.tar.gz)
+    fi
+    (cd dl/curl-${CURL} && ./configure --with-nghttp2 --prefix=/usr/local && make && sudo make install)
+  - sudo ldconfig
+  - sudo cp dl/cpanm /usr/local/bin/cpanm
+  - tar -zxf dl/nginx-${NGINX_VERSION}.tar.gz && mv nginx-${NGINX_VERSION} nginx
+  - cpanm --notest --local-lib=perl5 local::lib && eval $(perl -I perl5/lib/perl5/ -Mlocal::lib)
+  - |
+    if [ ! -f perl5/lib/perl5/Test/Nginx.pm ]; then
+      cpanm --notest dl/test-nginx-${TESTNGINX_VER}.tar.gz
+    fi
+  - |
+    if [ ! -f perl5/lib/perl5/Test/File.pm ]; then
+      cpanm --notest Test::File
+    fi
+
+install:
+  - cd nginx
+  - ./configure --with-http_v2_module --with-http_ssl_module --add-module=..
+  - make
+  - cd ..
+
+script:
+  - prove -r t

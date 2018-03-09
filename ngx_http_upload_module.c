@@ -59,11 +59,15 @@ typedef ngx_md5_t MD5_CTX;
 #define FIELDNAME_STRING                        "name=\""
 #define BYTES_UNIT_STRING                       "bytes "
 
-#define NGX_UPLOAD_MALFORMED    -1
-#define NGX_UPLOAD_NOMEM        -2
-#define NGX_UPLOAD_IOERROR      -3
-#define NGX_UPLOAD_SCRIPTERROR  -4
-#define NGX_UPLOAD_TOOLARGE     -5
+#define NGX_UPLOAD_MALFORMED    -11
+#define NGX_UPLOAD_NOMEM        -12
+#define NGX_UPLOAD_IOERROR      -13
+#define NGX_UPLOAD_SCRIPTERROR  -14
+#define NGX_UPLOAD_TOOLARGE     -15
+
+#ifndef NGX_HTTP_V2
+#define NGX_HTTP_V2 0
+#endif
 
 /*
  * State of multipart/form-data parser
@@ -287,6 +291,9 @@ typedef struct ngx_http_upload_ctx_s {
 
 static ngx_int_t ngx_http_upload_test_expect(ngx_http_request_t *r);
 
+#if (NGX_HTTP_V2)
+static void ngx_http_upload_read_event_handler(ngx_http_request_t *r);
+#endif
 static ngx_int_t ngx_http_upload_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_upload_options_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r);
@@ -896,6 +903,21 @@ ngx_http_upload_handler(ngx_http_request_t *r)
     if(upload_start(u, ulcf) != NGX_OK)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
 
+#if (NGX_HTTP_V2)
+    if (r->stream) {
+        r->request_body_no_buffering = 1;
+
+        rc = ngx_http_read_client_request_body(r, ngx_http_upload_read_event_handler);
+
+        if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
+            upload_shutdown_ctx(u);
+            return rc;
+        }
+
+        return NGX_DONE;
+    }
+#endif
+
     rc = ngx_http_read_upload_client_request_body(r);
 
     if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
@@ -904,6 +926,128 @@ ngx_http_upload_handler(ngx_http_request_t *r)
 
     return NGX_DONE;
 } /* }}} */
+
+#if (NGX_HTTP_V2)
+static void
+ngx_http_upload_read_event_handler(ngx_http_request_t *r)
+{
+    ngx_http_upload_ctx_t      *u;
+    ngx_http_request_body_t    *rb;
+    ngx_int_t                   rc;
+    ngx_chain_t                *in;
+    ssize_t                     n, limit, buf_read_size, next_buf_size, remaining;
+    ngx_msec_t                  delay;
+    ngx_event_t                *rev;
+
+    if (ngx_exiting || ngx_terminate) {
+        ngx_http_finalize_request(r, NGX_HTTP_CLOSE);
+        return;
+    }
+
+    rev = r->connection->read;
+    rb = r->request_body;
+
+    if (rb == NULL) {
+        ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+        return;
+    }
+
+    r->read_event_handler = ngx_http_upload_read_event_handler;
+
+    u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
+
+    for ( ;; ) {
+        buf_read_size = 0;
+
+        for (in = rb->bufs ; in; in = in->next) {
+            n = in->buf->last - in->buf->pos;
+
+            rc = u->data_handler(u, in->buf->pos, in->buf->pos + n);
+
+            in->buf->pos += n;
+            u->received += n;
+            buf_read_size += n;
+
+            if (rc != NGX_OK) {
+                goto err;
+            }
+        }
+        rb->bufs = NULL;
+
+        // We're done reading the request body, break out of loop
+        if (!r->reading_body) {
+            rc = u->data_handler(u, NULL, NULL);
+            if (rc == NGX_OK) {
+                break;
+            } else {
+                goto err;
+            }
+        }
+
+        // Check whether we have exceeded limit_rate and should delay the next
+        // buffer read
+        if (u->limit_rate) {
+            remaining = ((ssize_t) r->headers_in.content_length_n) - u->received;
+            next_buf_size = (buf_read_size > remaining) ? remaining : buf_read_size;
+            limit = u->limit_rate * (ngx_time() - r->start_sec + 1) - (u->received + next_buf_size);
+            if (limit < 0) {
+                rev->delayed = 1;
+                ngx_add_timer(rev, (ngx_msec_t) ((limit * -1000 / u->limit_rate) + 1));
+                return;
+            }
+        }
+
+        rc = ngx_http_read_unbuffered_request_body(r);
+
+        if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
+            goto err;
+        }
+
+        if (rb->bufs == NULL) {
+            return;
+        }
+
+        // Check whether we should delay processing the latest request body
+        // buffers to stay within limit_rate
+        if (u->limit_rate) {
+            buf_read_size = 0;
+            for (in = rb->bufs ; in; in = in->next) {
+                buf_read_size += (in->buf->last - in->buf->pos);
+            }
+            delay = (ngx_msec_t) (buf_read_size * 1000 / u->limit_rate + 1);
+            if (delay > 0) {
+                rev->delayed = 1;
+                ngx_add_timer(rev, delay);
+                return;
+            }
+        }
+    }
+
+    // Finally, send the response
+    rc = ngx_http_upload_body_handler(r);
+
+err:
+    switch(rc) {
+        case NGX_UPLOAD_MALFORMED:
+            rc = NGX_HTTP_BAD_REQUEST;
+            break;
+        case NGX_UPLOAD_TOOLARGE:
+            rc = NGX_HTTP_REQUEST_ENTITY_TOO_LARGE;
+            break;
+        case NGX_UPLOAD_IOERROR:
+            rc = NGX_HTTP_SERVICE_UNAVAILABLE;
+            break;
+        case NGX_UPLOAD_NOMEM:
+        case NGX_UPLOAD_SCRIPTERROR:
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            break;
+    }
+    if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
+        upload_shutdown_ctx(u);
+        ngx_http_finalize_request(r, rc);
+    }
+}
+#endif
 
 static ngx_int_t ngx_http_upload_add_headers(ngx_http_request_t *r, ngx_http_upload_loc_conf_t *ulcf) { /* {{{ */
     ngx_str_t                            name;
