@@ -49,24 +49,26 @@ before_install:
       (cd dl && tar -zxf nghttp2-${NGHTTP2}.tar.gz)
     fi
     (cd dl/nghttp2-${NGHTTP2} &&
-      ./configure --prefix=/usr --disable-threads &&
+      [ -f Makefile ] || ./configure --prefix=/usr --disable-threads &&
       make && sudo make install)
   - |
     if [ ! -e dl/curl-${CURL} ]; then
       (cd dl && tar -zxf curl-${CURL}.tar.gz)
     fi
-    (cd dl/curl-${CURL} && ./configure --with-nghttp2 --prefix=/usr/local && make && sudo make install)
+    (cd dl/curl-${CURL} &&
+      [ -f Makefile ] || ./configure --with-nghttp2 --prefix=/usr/local &&
+      make && sudo make install)
   - sudo ldconfig
   - sudo cp dl/cpanm /usr/local/bin/cpanm
   - tar -zxf dl/nginx-${NGINX_VERSION}.tar.gz && mv nginx-${NGINX_VERSION} nginx
-  - cpanm --notest --local-lib=perl5 local::lib && eval $(perl -I perl5/lib/perl5/ -Mlocal::lib)
+  - cpanm --notest --local-lib=perl5 local::lib && eval $(perl -I perl5/lib/perl5/ -Mlocal::lib=./perl5)
   - |
     if [ ! -f perl5/lib/perl5/Test/Nginx.pm ]; then
-      cpanm --notest dl/test-nginx-${TESTNGINX_VER}.tar.gz
+      cpanm --notest --local-lib=perl5 dl/test-nginx-${TESTNGINX_VER}.tar.gz
     fi
   - |
     if [ ! -f perl5/lib/perl5/Test/File.pm ]; then
-      cpanm --notest Test::File
+      cpanm --notest --local-lib=perl5 Test::File
     fi
 
 install:
