@@ -2,7 +2,30 @@
 
 A module for [nginx](https://www.nginx.com/) for handling file uploads using
 multipart/form-data encoding ([RFC 1867](http://www.ietf.org/rfc/rfc1867.txt))
-and resumable uploads according to [this](#upload-protocol) protocol
+and resumable uploads according to
+[this](https://github.com/fdintino/nginx-upload-module/upload-protocol.md)
+protocol.
+
+* [Description](#description)
+* [Directives](#directives)
+    * [upload_pass](#upload_pass)
+    * [upload_resumable](#upload_resumable)
+    * [upload_store](#upload_store)
+    * [upload_state_store](#upload_state_store)
+    * [upload_store_access](#upload_store_access)
+    * [upload_set_form_field](#upload_set_form_field)
+    * [upload_aggregate_form_field](#upload_aggregate_form_field)
+    * [upload_pass_form_field](#upload_pass_form_field)
+    * [upload_cleanup](#upload_cleanup)
+    * [upload_buffer_size](#upload_buffer_size)
+    * [upload_max_part_header_len](#upload_max_part_header_len)
+    * [upload_max_file_size](#upload_max_file_size)
+    * [upload_limit_rate](#upload_limit_rate)
+    * [upload_max_output_body_len](#upload_max_output_body_len)
+    * [upload_tame_arrays](#upload_tame_arrays)
+    * [upload_pass_args](#upload_pass_args)
+* [Example configuration](#example-configuration)
+* [License](#license)
 
 ## Description
 
