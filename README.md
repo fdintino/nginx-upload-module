@@ -5,7 +5,7 @@
 A module for [nginx](https://www.nginx.com/) for handling file uploads using
 multipart/form-data encoding ([RFC 1867](http://www.ietf.org/rfc/rfc1867.txt))
 and resumable uploads according to
-[this](https://github.com/fdintino/nginx-upload-module/upload-protocol.md)
+[this](https://github.com/fdintino/nginx-upload-module/blob/master/upload-protocol.md)
 protocol.
 
 * [Description](#description)
