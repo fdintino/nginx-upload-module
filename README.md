@@ -1,6 +1,7 @@
 # nginx-upload-module
 
 [![Build Status](https://travis-ci.org/fdintino/nginx-upload-module.svg?branch=master)](https://travis-ci.org/fdintino/nginx-upload-module)
+[![codecov](https://codecov.io/gh/fdintino/nginx-upload-module/branch/master/graph/badge.svg)](https://codecov.io/gh/fdintino/nginx-upload-module)
 
 A module for [nginx](https://www.nginx.com/) for handling file uploads using
 multipart/form-data encoding ([RFC 1867](http://www.ietf.org/rfc/rfc1867.txt))
