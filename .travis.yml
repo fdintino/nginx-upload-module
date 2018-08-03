@@ -73,9 +73,12 @@ before_install:
 
 install:
   - cd nginx
-  - ./configure --with-http_v2_module --with-http_ssl_module --add-module=..
+  - ./configure --with-http_v2_module --with-http_ssl_module --add-module=$TRAVIS_BUILD_DIR --with-cc-opt='-O0 -coverage' --with-ld-opt='-fprofile-arcs'
   - make
   - cd ..
 
 script:
   - prove -r t
+
+after_success:
+  - bash <(curl -s https://codecov.io/bash) -G '*ngx_http_upload_module*' -a '--object-directory nginx/objs/addon/nginx-upload-module *.c -s '"$TRAVIS_BUILD_DIR"
