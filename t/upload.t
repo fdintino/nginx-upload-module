@@ -5,7 +5,7 @@ use File::Basename qw(dirname);
 
 use lib dirname(__FILE__) . "/lib";
 
-use Test::Nginx::Socket tests => 22;
+use Test::Nginx::Socket tests => 27;
 use Test::Nginx::UploadModule;
 
 
@@ -20,7 +20,6 @@ location = /upload/ {
     upload_set_form_field "upload_content_type" "$upload_content_type";
     upload_set_form_field "upload_tmp_path" "$upload_tmp_path";
     upload_set_form_field "upload_content_range" "$upload_content_range";
-    upload_aggregate_form_field "upload_file_size" "$upload_file_size";
     upload_max_file_size 0;
     upload_pass_args on;
     upload_cleanup 400 404 499 500-505;
@@ -49,7 +48,6 @@ upload_content_type = text/plain
 upload_field_name = file
 upload_file_name = test.txt
 upload_file_number = 1
-upload_file_size = 4
 upload_tmp_path = ${ENV{TEST_NGINX_UPLOAD_PATH}}/store/1/0000000001
 }
 --- upload_file_like eval
@@ -80,7 +78,6 @@ upload_content_type = text/plain
 upload_field_name = file
 upload_file_name = test.txt
 upload_file_number = 1
-upload_file_size = 4
 upload_tmp_path = ${ENV{TEST_NGINX_UPLOAD_PATH}}/store/2/0000000002
 }]
 --- upload_file_like eval
@@ -110,7 +107,6 @@ upload_content_type = text/plain
 upload_field_name = file
 upload_file_name = test.txt
 upload_file_number = 1
-upload_file_size = 262144
 upload_tmp_path = ${ENV{TEST_NGINX_UPLOAD_PATH}}/store/3/0000000003
 }]
 --- upload_file_like eval
@@ -121,7 +117,6 @@ qr/^(??{'x' x 262144})$/
 location = /upload/ {
     upload_pass @upstream;
     upload_resumable on;
-    upload_aggregate_form_field "upload_file_size" "$upload_file_size";
     upload_set_form_field "upload_tmp_path" "$upload_tmp_path";
     upload_max_file_size 0;
     upload_pass_args on;
@@ -146,8 +141,7 @@ Content-Disposition: form-data; name="file"; filename="test.txt"}]
 --- error_code eval
 [201, 200]
 --- response_body eval
-["0-131071/262144", qq{upload_file_size = 262144
-upload_tmp_path = ${ENV{TEST_NGINX_UPLOAD_PATH}}/store/4/0000000004
+["0-131071/262144", qq{upload_tmp_path = ${ENV{TEST_NGINX_UPLOAD_PATH}}/store/4/0000000004
 }]
 --- upload_file_like eval
 qr/^(??{'x' x 262144})$/
@@ -156,3 +150,32 @@ qr/^(??{'x' x 262144})$/
 # (Test::Nginx::UploadModule::http_config adds request time to the end of
 # the access log)
 [qr/[34]\.\d\d\d$/, qr/[34]\.\d\d\d$/]
+
+=== TEST 5: multiple chunk uploads out-of-order
+--- config eval: $::config
+--- more_headers eval
+[qq{X-Content-Range: bytes 131072-262143/262144
+Session-ID: 0000000005
+Content-Type: text/plain
+Content-Disposition: form-data; name="file"; filename="test.txt"},
+qq{X-Content-Range: bytes 0-131071/262144
+Session-ID: 0000000005
+Content-Type: text/plain
+Content-Disposition: form-data; name="file"; filename="test.txt"}]
+--- request eval
+[["POST /upload/\r\n",
+"b" x 131072],
+["POST /upload/\r\n",
+"a" x 131072]]
+--- error_code eval
+[201, 200]
+--- response_body eval
+["131072-262143/262144", qq{upload_content_range = bytes 0-131071/262144
+upload_content_type = text/plain
+upload_field_name = file
+upload_file_name = test.txt
+upload_file_number = 1
+upload_tmp_path = ${ENV{TEST_NGINX_UPLOAD_PATH}}/store/5/0000000005
+}]
+--- upload_file_like eval
+qr/^(??{'a' x 131072 . 'b' x 131072})$/
