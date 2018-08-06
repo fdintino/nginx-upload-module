@@ -145,6 +145,10 @@ following additional special variables:
   - `$upload_file_md5_uc`: MD5 checksum of the file in uppercase letters
   - `$upload_file_sha1`: SHA1 checksum of the file
   - `$upload_file_sha1_uc`: SHA1 checksum of the file in uppercase letters
+  - `$upload_file_sha256`: SHA256 checksum of the file
+  - `$upload_file_sha256_uc`: SHA256 checksum of the file in uppercase letters
+  - `$upload_file_sha512`: SHA512 checksum of the file
+  - `$upload_file_sha512_uc`: SHA512 checksum of the file in uppercase letters
   - `$upload_file_crc32`: hexdecimal value of CRC32 of the file
   - `$upload_file_size`: size of the file in bytes
   - `$upload_file_number`: ordinal number of file in request body
