@@ -78,7 +78,7 @@ install:
   - cd ..
 
 script:
-  - prove -r t
+  - prove --directives --verbose -r t
 
 after_success:
   - bash <(curl -s https://codecov.io/bash) -G '*ngx_http_upload_module*' -a '--object-directory nginx/objs/addon/nginx-upload-module *.c -s '"$TRAVIS_BUILD_DIR"
