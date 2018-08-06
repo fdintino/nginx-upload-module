@@ -2434,51 +2434,62 @@ ngx_http_upload_variable(ngx_http_request_t *r,
     return NGX_OK;
 } /* }}} */
 
-static ngx_int_t /* {{{ ngx_http_upload_md5_variable */
-ngx_http_upload_md5_variable(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v,  uintptr_t data)
+static ngx_int_t
+ngx_http_upload_hash_variable(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data, u_char *digest,
+    ngx_uint_t digest_len)
 {
     ngx_uint_t             i;
-    ngx_http_upload_ctx_t  *u;
     u_char                 *c;
+    u_char                 *p;
     u_char                 *hex_table;
-
-    u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
-
-    if(u->md5_ctx == NULL || u->partial_content) {
-        v->not_found = 1;
-        return NGX_OK;
-    }
 
     v->valid = 1;
     v->no_cacheable = 0;
     v->not_found = 0;
 
     hex_table = (u_char*)data;
-    c = u->md5_ctx->md5_digest + MD5_DIGEST_LENGTH * 2;
 
-    i = MD5_DIGEST_LENGTH;
+    p = ngx_palloc(r->pool, digest_len * 2);
+    if (p == NULL) {
+        return NGX_ERROR;
+    }
+
+    c = p + digest_len * 2;
+    i = digest_len;
 
     do{
         i--;
-        *--c = hex_table[u->md5_ctx->md5_digest[i] & 0xf];
-        *--c = hex_table[u->md5_ctx->md5_digest[i] >> 4];
+        *--c = hex_table[digest[i] & 0xf];
+        *--c = hex_table[digest[i] >> 4];
     }while(i != 0);
 
-    v->data = u->md5_ctx->md5_digest;
-    v->len = MD5_DIGEST_LENGTH * 2;
+    v->data = c;
+    v->len = digest_len * 2;
 
     return NGX_OK;
+} /* }}} */
+
+static ngx_int_t /* {{{ ngx_http_upload_md5_variable */
+ngx_http_upload_md5_variable(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v,  uintptr_t data)
+{
+    ngx_http_upload_ctx_t  *u;
+
+    u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
+
+    if(u->sha1_ctx == NULL || u->partial_content) {
+        v->not_found = 1;
+        return NGX_OK;
+    }
+    return ngx_http_upload_hash_variable(r, v, data, u->md5_ctx->md5_digest, MD5_DIGEST_LENGTH);
 } /* }}} */
 
 static ngx_int_t /* {{{ ngx_http_upload_sha1_variable */
 ngx_http_upload_sha1_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v,  uintptr_t data)
 {
-    ngx_uint_t             i;
     ngx_http_upload_ctx_t  *u;
-    u_char                 *c;
-    u_char                 *hex_table;
 
     u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
 
@@ -2487,35 +2498,14 @@ ngx_http_upload_sha1_variable(ngx_http_request_t *r,
         return NGX_OK;
     }
 
-    v->valid = 1;
-    v->no_cacheable = 0;
-    v->not_found = 0;
-
-    hex_table = (u_char*)data;
-    c = u->sha1_ctx->sha1_digest + SHA_DIGEST_LENGTH * 2;
-
-    i = SHA_DIGEST_LENGTH;
-
-    do{
-        i--;
-        *--c = hex_table[u->sha1_ctx->sha1_digest[i] & 0xf];
-        *--c = hex_table[u->sha1_ctx->sha1_digest[i] >> 4];
-    }while(i != 0);
-
-    v->data = u->sha1_ctx->sha1_digest;
-    v->len = SHA_DIGEST_LENGTH * 2;
-
-    return NGX_OK;
+    return ngx_http_upload_hash_variable(r, v, data, u->sha1_ctx->sha1_digest, SHA_DIGEST_LENGTH);
 } /* }}} */
 
 static ngx_int_t /* {{{ ngx_http_upload_sha256_variable */
 ngx_http_upload_sha256_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v,  uintptr_t data)
 {
-    ngx_uint_t             i;
     ngx_http_upload_ctx_t  *u;
-    u_char                 *c;
-    u_char                 *hex_table;
 
     u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
 
@@ -2524,35 +2514,14 @@ ngx_http_upload_sha256_variable(ngx_http_request_t *r,
         return NGX_OK;
     }
 
-    v->valid = 1;
-    v->no_cacheable = 0;
-    v->not_found = 0;
-
-    hex_table = (u_char*)data;
-    c = u->sha256_ctx->sha256_digest + SHA256_DIGEST_LENGTH * 2;
-
-    i = SHA256_DIGEST_LENGTH;
-
-    do{
-        i--;
-        *--c = hex_table[u->sha256_ctx->sha256_digest[i] & 0xf];
-        *--c = hex_table[u->sha256_ctx->sha256_digest[i] >> 4];
-    }while(i != 0);
-
-    v->data = u->sha256_ctx->sha256_digest;
-    v->len = SHA256_DIGEST_LENGTH * 2;
-
-    return NGX_OK;
+    return ngx_http_upload_hash_variable(r, v, data, u->sha256_ctx->sha256_digest, SHA256_DIGEST_LENGTH);
 } /* }}} */
 
 static ngx_int_t /* {{{ ngx_http_upload_sha512_variable */
 ngx_http_upload_sha512_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v,  uintptr_t data)
 {
-    ngx_uint_t             i;
     ngx_http_upload_ctx_t  *u;
-    u_char                 *c;
-    u_char                 *hex_table;
 
     u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
 
@@ -2561,25 +2530,7 @@ ngx_http_upload_sha512_variable(ngx_http_request_t *r,
         return NGX_OK;
     }
 
-    v->valid = 1;
-    v->no_cacheable = 0;
-    v->not_found = 0;
-
-    hex_table = (u_char*)data;
-    c = u->sha512_ctx->sha512_digest + SHA512_DIGEST_LENGTH * 2;
-
-    i = SHA512_DIGEST_LENGTH;
-
-    do{
-        i--;
-        *--c = hex_table[u->sha512_ctx->sha512_digest[i] & 0xf];
-        *--c = hex_table[u->sha512_ctx->sha512_digest[i] >> 4];
-    }while(i != 0);
-
-    v->data = u->sha512_ctx->sha512_digest;
-    v->len = SHA512_DIGEST_LENGTH * 2;
-
-    return NGX_OK;
+    return ngx_http_upload_hash_variable(r, v, data, u->sha512_ctx->sha512_digest, SHA512_DIGEST_LENGTH);
 } /* }}} */
 
 static ngx_int_t /* {{{ ngx_http_upload_crc32_variable */
