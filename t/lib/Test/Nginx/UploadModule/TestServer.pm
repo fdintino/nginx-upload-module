@@ -160,7 +160,7 @@ sub handle_requests {
         my @fields = ();
         for my $k (sort keys %$data) {
             my $v = $data->{$k};
-            if ($v->isa('File')) {
+            if ($v && $v->isa('File')) {
                 my $filename = $v->{filename};
                 $k .= "(${filename})";
                 $v = $v->{contents};
