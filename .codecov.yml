@@ -7,3 +7,6 @@ coverage:
     project: no
     patch: no
     changes: no
+  range: 60..100
+  round: down
+  precision: 2
