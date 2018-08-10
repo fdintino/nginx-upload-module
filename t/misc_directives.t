@@ -5,7 +5,7 @@ use File::Basename qw(dirname);
 
 use lib dirname(__FILE__) . "/lib";
 
-use Test::Nginx::Socket tests => 10;
+use Test::Nginx::Socket tests => 13;
 use Test::More;
 use Test::Nginx::UploadModule;
 
@@ -119,5 +119,27 @@ Content-Disposition: form-data; name="file"; filename="test.txt"
 POST /upload/
 test
 --- error_code: 200
+--- response_body
+upload_file_name = test.txt
+
+
+=== TEST 6: upload_add_header
+--- config
+location /upload/ {
+    upload_pass @upstream;
+    upload_resumable on;
+    upload_add_header X-Upload-Filename $upload_file_name;
+    upload_set_form_field upload_file_name $upload_file_name;
+}
+--- more_headers
+X-Content-Range: bytes 0-3/4
+Session-ID: 3
+Content-Type: text/plain
+Content-Disposition: form-data; name="file"; filename="test.txt"
+--- request
+POST /upload/
+test
+--- error_code: 200
+--- raw_response_headers_like: X-Upload-Filename: test\.txt
 --- response_body
 upload_file_name = test.txt
