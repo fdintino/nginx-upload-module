@@ -302,8 +302,6 @@ static void *ngx_http_upload_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_upload_merge_loc_conf(ngx_conf_t *cf,
     void *parent, void *child);
 static ngx_int_t ngx_http_upload_add_variables(ngx_conf_t *cf);
-static void ngx_http_upload_variable_set(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, uintptr_t data);
 static ngx_int_t ngx_http_upload_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data);
 static ngx_int_t ngx_http_upload_md5_variable(ngx_http_request_t *r,
@@ -710,7 +708,7 @@ static ngx_http_variable_t  ngx_http_upload_variables[] = { /* {{{ */
       NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH, 0 },
 
     { ngx_string("upload_content_type"),
-      ngx_http_upload_variable_set,
+      NULL,
       ngx_http_upload_variable,
       (uintptr_t) offsetof(ngx_http_upload_ctx_t, content_type),
       NGX_HTTP_VAR_CHANGEABLE|NGX_HTTP_VAR_NOCACHEABLE|NGX_HTTP_VAR_NOHASH, 0 },
@@ -2396,21 +2394,6 @@ ngx_http_upload_add_variables(ngx_conf_t *cf)
     }
 
     return NGX_OK;
-} /* }}} */
-
-static void /* {{{ ngx_http_upload_variable_set */
-ngx_http_upload_variable_set(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, uintptr_t data)
-{
-    ngx_str_t  *s;
-    ngx_http_upload_ctx_t  *u;
-
-    u = ngx_http_get_module_ctx(r, ngx_http_upload_module);
-
-    s = (ngx_str_t *) ((char *) u + data);
-
-    s->len = v->len;
-    s->data = v->data;
 } /* }}} */
 
 static ngx_int_t /* {{{ ngx_http_upload_variable */
