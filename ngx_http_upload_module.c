@@ -3112,8 +3112,21 @@ ngx_http_read_upload_client_request_body(ngx_http_request_t *r) {
     r->main->count++;
 #endif
 
-    if (r->request_body || r->discard_body) {
+    //if (r->request_body || r->discard_body) {
+    if (r->discard_body) {
         return NGX_OK;
+    }
+    //BOYD lua-nginx  ngx.req.read_body() may already have request body
+    if (r->request_body)
+    {
+        if (ngx_http_process_request_body(r,  r->request_body->bufs) != NGX_OK) {
+            upload_shutdown_ctx(u);
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        }
+        
+        upload_shutdown_ctx(u);
+        
+        return ngx_http_upload_body_handler(r);
     }
 
     rb = ngx_pcalloc(r->pool, sizeof(ngx_http_request_body_t));
