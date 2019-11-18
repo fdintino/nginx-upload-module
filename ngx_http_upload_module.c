@@ -3450,6 +3450,8 @@ ngx_http_do_read_upload_client_request_body(ngx_http_request_t *r)
         ngx_del_timer(c->read);
     }
 
+    r->read_event_handler = ngx_http_block_reading;
+
     rc = ngx_http_process_request_body(r, u->to_write);
 
     switch(rc) {
