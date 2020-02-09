@@ -1174,6 +1174,10 @@ static ngx_int_t ngx_http_upload_body_handler(ngx_http_request_t *r) { /* {{{ */
     ngx_str_t                   dummy = ngx_string("<ngx_upload_module_dummy>");
     ngx_table_elt_t             *h;
 
+    if(ngx_http_upload_add_headers(r, ulcf) != NGX_OK) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
     if(ctx->prevent_output) {
         r->headers_out.status = NGX_HTTP_CREATED;
 
@@ -1686,10 +1690,6 @@ static void ngx_http_upload_finish_handler(ngx_http_upload_ctx_t *u) { /* {{{ */
             , &u->file_name
             , &u->output_file.name
             );
-
-        if (ngx_http_upload_add_headers(r, ulcf) != NGX_OK) {
-            goto rollback;
-        }
 
         if(ulcf->aggregate_field_templates) {
             af = ulcf->aggregate_field_templates->elts;
