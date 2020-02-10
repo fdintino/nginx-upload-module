@@ -5,7 +5,7 @@ use File::Basename qw(dirname);
 
 use lib dirname(__FILE__) . "/lib";
 
-use Test::Nginx::Socket tests => 13;
+use Test::Nginx::Socket tests => 16;
 use Test::More;
 use Test::Nginx::UploadModule;
 
@@ -129,17 +129,30 @@ location /upload/ {
     upload_pass @upstream;
     upload_resumable on;
     upload_add_header X-Upload-Filename $upload_file_name;
+    upload_add_header Access-Control-Allow-Origin *;
     upload_set_form_field upload_file_name $upload_file_name;
 }
---- more_headers
-X-Content-Range: bytes 0-3/4
-Session-ID: 3
+--- more_headers eval
+[qq{X-Content-Range: bytes 0-1/4
+Session-ID: 0000000002
 Content-Type: text/plain
-Content-Disposition: form-data; name="file"; filename="test.txt"
---- request
-POST /upload/
-test
---- error_code: 200
---- raw_response_headers_like: X-Upload-Filename: test\.txt
---- response_body
-upload_file_name = test.txt
+Content-Disposition: form-data; name="file"; filename="test.txt"},
+qq{X-Content-Range: bytes 2-3/4
+Session-ID: 0000000002
+Content-Type: text/plain
+Content-Disposition: form-data; name="file"; filename="test.txt"}]
+--- request eval
+[["POST /upload/\r\n",
+"te"],
+["POST /upload/\r\n",
+"st"]]
+--- error_code eval
+[201, 200]
+--- raw_response_headers_like eval
+[
+qq{(?i)X-Upload-Filename: test\.txt.*?Access-Control-Allow-Origin: \*},
+qq{(?i)X-Upload-Filename: test\.txt.*?Access-Control-Allow-Origin: \*}
+]
+--- response_body eval
+["0-1/4", qq{upload_file_name = test.txt
+}]
