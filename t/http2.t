@@ -5,7 +5,7 @@ use File::Basename qw(dirname);
 use lib dirname(__FILE__) . "/lib";
 use Cwd qw(abs_path);
 
-use Test::Nginx::Socket tests => 20;
+use Test::Nginx::Socket tests => 26;
 use Test::Nginx::UploadModule;
 
 $ENV{TEST_DIR} = abs_path(dirname(__FILE__));
@@ -38,7 +38,7 @@ __DATA__
 --- config eval: $::config
 --- http2
 --- skip_nginx
-3: < 1.10.0
+2: < 1.10.0
 --- more_headers
 X-Content-Range: bytes 0-3/4
 Session-ID: 0000000001
@@ -65,7 +65,7 @@ upload_tmp_path = $ENV{TEST_NGINX_UPLOAD_PATH}/store/1/0000000001
 --- config eval: $::config
 --- http2
 --- skip_nginx
-3: < 1.10.0
+4: < 1.10.0
 --- more_headers eval
 [qq{X-Content-Range: bytes 0-1/4
 Session-ID: 0000000002
@@ -166,3 +166,40 @@ qr/^(??{'x' x 262144})$/
 # (Test::Nginx::UploadModule::http_config adds request time to the end of
 # the access log)
 [qr/[34]\.\d\d\d$/, qr/[34]\.\d\d\d$/]
+
+=== TEST 5: upload_add_header
+--- skip_nginx
+6: < 1.10.0
+--- http2
+--- config
+location /upload/ {
+    upload_pass @upstream;
+    upload_resumable on;
+    upload_add_header X-Upload-Filename $upload_file_name;
+    upload_add_header Access-Control-Allow-Origin *;
+    upload_set_form_field upload_file_name $upload_file_name;
+}
+--- more_headers eval
+[qq{X-Content-Range: bytes 0-1/4
+Session-ID: 0000000002
+Content-Type: text/plain
+Content-Disposition: form-data; name="file"; filename="test.txt"},
+qq{X-Content-Range: bytes 2-3/4
+Session-ID: 0000000002
+Content-Type: text/plain
+Content-Disposition: form-data; name="file"; filename="test.txt"}]
+--- request eval
+[["POST /upload/\r\n",
+"te"],
+["POST /upload/\r\n",
+"st"]]
+--- error_code eval
+[201, 200]
+--- raw_response_headers_like eval
+[
+qq{(?i)X-Upload-Filename: test\.txt.*?Access-Control-Allow-Origin: \*},
+qq{(?i)X-Upload-Filename: test\.txt.*?Access-Control-Allow-Origin: \*}
+]
+--- response_body eval
+["0-1/4", qq{upload_file_name = test.txt
+}]
