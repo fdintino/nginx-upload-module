@@ -111,7 +111,7 @@ sub process_body {
     my $content_type = $req->header('Content-Type');
     my $data = {};
     if ($content_type) {
-        if ($content_type =~ /multipart\/form\-data; boundary=(.+?)$/i) {
+        if ($content_type =~ /multipart\/form\-data; boundary="?(.+?)"?$/i) {
             my $boundary = quotemeta($1);
             return $self->process_multipart($content, $boundary);
         }

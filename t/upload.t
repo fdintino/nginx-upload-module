@@ -5,7 +5,7 @@ use File::Basename qw(dirname);
 
 use lib dirname(__FILE__) . "/lib";
 
-use Test::Nginx::Socket tests => 27;
+use Test::Nginx::Socket tests => 33;
 use Test::Nginx::UploadModule;
 
 
@@ -179,3 +179,53 @@ upload_tmp_path = ${ENV{TEST_NGINX_UPLOAD_PATH}}/store/5/0000000005
 }]
 --- upload_file_like eval
 qr/^(??{'a' x 131072 . 'b' x 131072})$/
+
+=== TEST 6: multipart upload
+--- config eval: $::config
+--- more_headers
+Content-Type: multipart/form-data; boundary=BOUNDARY
+--- request eval
+"POST /upload/
+--BOUNDARY
+Content-Disposition: form-data; name=\"file\"; filename=\"test.txt\"\r
+Content-Type: text/plain\r
+\r
+test\r
+--BOUNDARY--\r
+"
+--- error_code: 200
+--- response_body eval
+qq{upload_content_range = bytes 0-0/0
+upload_content_type = text/plain
+upload_field_name = file
+upload_file_name = test.txt
+upload_file_number = 1
+upload_tmp_path = ${ENV{TEST_NGINX_UPLOAD_PATH}}/store/8/0000123458
+}
+--- upload_file_like eval
+qr/^test$/
+
+=== TEST 7: multipart upload with quoted boundary and unquoted names
+--- config eval: $::config
+--- more_headers
+Content-Type: multipart/form-data; boundary="BOUNDARY"
+--- request eval
+"POST /upload/
+--BOUNDARY
+Content-Disposition: form-data; name=file; filename=test.txt\r
+Content-Type: text/plain\r
+\r
+test\r
+--BOUNDARY--\r
+"
+--- error_code: 200
+--- response_body eval
+qq{upload_content_range = bytes 0-0/0
+upload_content_type = text/plain
+upload_field_name = file
+upload_file_name = test.txt
+upload_file_number = 1
+upload_tmp_path = ${ENV{TEST_NGINX_UPLOAD_PATH}}/store/5/0000246915
+}
+--- upload_file_like eval
+qr/^test$/
