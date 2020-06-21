@@ -1984,7 +1984,7 @@ ngx_http_upload_buf_merge_range(ngx_http_upload_merger_state_t *ms, ngx_http_upl
                     return NGX_ERROR;
                 }
 
-                if(ms->current_range_n.start >= ms->current_range_n.end || ms->current_range_n.start >= ms->current_range_n.total
+                if(ms->current_range_n.start > ms->current_range_n.end || ms->current_range_n.start > ms->current_range_n.total
                     || ms->current_range_n.end > ms->current_range_n.total)
                 {
                     ngx_log_debug3(NGX_LOG_DEBUG_CORE, ms->log, 0,
