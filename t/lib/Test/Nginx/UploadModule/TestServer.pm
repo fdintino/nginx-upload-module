@@ -33,7 +33,7 @@ sub new {
         },
     };
     $self->{sock} = HTTP::Daemon->new(
-        LocalAddr => 'localhost',
+        LocalAddr => '127.0.0.1',
         LocalPort => $self->{opts}->{port},
         ReuseAddr => 1
     ) || die("Could not open socket on port $port: $!");

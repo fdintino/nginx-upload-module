@@ -130,7 +130,7 @@ qr/^(??{'x' x 262144})$/
 
 === Test 4: http2 upload_limit_rate
 --- skip_nginx
-9: < 1.10.0
+9: < 2.10.0
 --- http2
 --- config
 location = /upload/ {

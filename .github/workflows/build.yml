@@ -1,0 +1,91 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      NGHTTP2_VERSION: 1.45.1
+      CURL_VERSION: 7.79.1
+    strategy:
+      matrix:
+        nginx: [1.21.3]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+
+      - name: Install cpanm
+        run: |
+          curl -L https://cpanmin.us | perl - --sudo App::cpanminus
+
+      - name: Install local::lib
+        run: |
+          cpanm --local-lib=~/perl5 local::lib && eval $(perl -I ~/perl5/lib/perl5/ -Mlocal::lib)
+          echo $HOME/perl5 >> $GITHUB_PATH
+          echo PERL5LIB=$HOME/perl5/lib/perl5:$PERL5LIB >> $GITHUB_ENV
+          echo PERL_MB_OPT="--install_base \"$HOME/perl5\"" >> $GITHUB_ENV
+          echo PERL_MM_OPT="INSTALL_BASE=$HOME/perl5" >> $GITHUB_ENV
+
+      - name: Install Test::Nginx and Test::File
+        run: |
+          cpanm --notest --local-lib=~/perl5 Test::Nginx
+          cpanm --notest --local-lib=~/perl5 Test::File
+          cpanm --notest --local-lib=~/perl5 HTTP::Daemon
+
+      - name: Build nghttp2
+        run: |
+          mkdir -p $RUNNER_TEMP/nghttp2
+          cd $RUNNER_TEMP/nghttp2
+          curl -L \
+            https://github.com/nghttp2/nghttp2/releases/download/v$NGHTTP2_VERSION/nghttp2-$NGHTTP2_VERSION.tar.gz \
+            | tar -zxC $RUNNER_TEMP
+          cd $RUNNER_TEMP/nghttp2-$NGHTTP2_VERSION
+          ./configure --prefix=/usr --disable-threads
+          make && sudo make install
+
+      - name: Build curl
+        run: |
+          export curl_release=$(echo $CURL_VERSION | perl -pne 's/\./_/g')
+          curl -L \
+            https://github.com/curl/curl/releases/download/curl-${curl_release}/curl-${CURL_VERSION}.tar.gz \
+            | tar -zxC $RUNNER_TEMP
+          cd $RUNNER_TEMP/curl-$CURL_VERSION
+          ./configure --with-nghttp2 --prefix=/usr/local --with-openssl
+          make
+          sudo make install
+          sudo ldconfig
+
+      - name: Compile nginx
+        run: |
+          curl -L http://nginx.org/download/nginx-${{ matrix.nginx }}.tar.gz | tar -zx
+          cd nginx-${{ matrix.nginx }}
+          ./configure \
+            --with-http_v2_module \
+            --with-http_ssl_module \
+            --add-module=.. \
+            --with-cc-opt='-O0 -coverage -fprofile-arcs -ftest-coverage' \
+            --with-ld-opt='-lgcov -coverage -fprofile-arcs'
+          make
+          export OBJDIR=$GITHUB_WORKSPACE/nginx-${{ matrix.nginx }}/objs
+          echo OBJDIR=$OBJDIR >> $GITHUB_ENV
+          echo $OBJDIR >> $GITHUB_PATH
+
+      - name: Test
+        run: |
+          prove --directives --verbose -r t
+
+      - name: Run gcov
+        run: |
+          find . \
+            -type f \
+            -name '*.gcno' \
+            -path '*ngx_http_upload_module*' \
+            -exec gcov \
+            -pb --object-directory ${{ env.OBJDIR }}/addon/nginx-upload-module *.c -s ${{ env.GITHUB_WORKSPACE }} {} +
+
+      - name: Upload to codecov
+        uses: codecov/codecov-action@v2
+        with:
+          verbose: true
