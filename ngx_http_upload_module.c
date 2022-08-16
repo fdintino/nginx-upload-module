@@ -178,6 +178,7 @@ typedef struct {
     ngx_flag_t                    forward_args;
     ngx_flag_t                    tame_arrays;
     ngx_flag_t                    resumable_uploads;
+    ngx_flag_t                    upload_pass_form_field_default;
     ngx_flag_t                    empty_field_names;
     size_t                        limit_rate;
 
@@ -580,6 +581,17 @@ static ngx_command_t  ngx_http_upload_commands[] = { /* {{{ */
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_upload_loc_conf_t, aggregate_field_templates),
       NULL},
+
+    /*
+     * Specifies whether to pass fields to backend by default
+     */
+    { ngx_string("upload_pass_form_field_default"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LMT_CONF|NGX_HTTP_LIF_CONF
+                        |NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_upload_loc_conf_t, upload_pass_form_field_default),
+      NULL },
 
     /*
      * Specifies the field to pass to backend
@@ -1557,6 +1569,10 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
     }else{
         pass_field = 0;
 
+        if(ulcf->upload_pass_form_field_default) {
+            pass_field = 1;
+        }
+
         if(ulcf->field_filters) {
             f = ulcf->field_filters->elts;
             for (i = 0; i < ulcf->field_filters->nelts; i++) {
@@ -1582,7 +1598,10 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
             }
         }
 
-        if(pass_field && u->field_name.len != 0) { 
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                       "passing other field \"%V\" = %d", &u->field_name, pass_field);
+
+        if(pass_field && u->field_name.len != 0) {
             /*
              * Here we do a small hack: the content of a non-file field
              * is not known until ngx_http_upload_flush_output_buffer
@@ -1592,8 +1611,14 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
 
             if(rc != NGX_OK)
                 return rc;
-        }else
+        }else{
+            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0
+                , "discarding other form field \"%V\""
+                , &u->field_name
+                );
+
             u->discard_data = 1;
+        }
     }
 
 
@@ -2218,6 +2243,7 @@ ngx_http_upload_create_loc_conf(ngx_conf_t *cf)
     conf->tame_arrays = NGX_CONF_UNSET;
     conf->resumable_uploads = NGX_CONF_UNSET;
     conf->empty_field_names = NGX_CONF_UNSET;
+    conf->upload_pass_form_field_default = NGX_CONF_UNSET;
 
     conf->buffer_size = NGX_CONF_UNSET_SIZE;
     conf->merge_buffer_size = NGX_CONF_UNSET_SIZE;
@@ -2303,6 +2329,11 @@ ngx_http_upload_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     if(conf->resumable_uploads == NGX_CONF_UNSET) {
         conf->resumable_uploads = (prev->resumable_uploads != NGX_CONF_UNSET) ?
             prev->resumable_uploads : 0;
+    }
+
+    if(conf->upload_pass_form_field_default == NGX_CONF_UNSET) {
+        conf->upload_pass_form_field_default = (prev->upload_pass_form_field_default != NGX_CONF_UNSET) ?
+            prev->upload_pass_form_field_default : 0;
     }
 
     if(conf->empty_field_names == NGX_CONF_UNSET) {
