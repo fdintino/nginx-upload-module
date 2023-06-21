@@ -12,7 +12,7 @@
 
 #include <ngx_md5.h>
 
-typedef ngx_md5_t MD5_CTX;
+typedef ngx_md5_t MD5_CTX1;
 
 #define MD5Init ngx_md5_init
 #define MD5Update ngx_md5_update
@@ -189,7 +189,7 @@ typedef struct {
 } ngx_http_upload_loc_conf_t;
 
 typedef struct ngx_http_upload_md5_ctx_s {
-    MD5_CTX     md5;
+    MD5_CTX1    md5;
     u_char      md5_digest[MD5_DIGEST_LENGTH * 2];
 } ngx_http_upload_md5_ctx_t;
 
