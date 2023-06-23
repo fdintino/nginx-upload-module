@@ -18,6 +18,7 @@ protocol.
     * [upload_store_access](#upload_store_access)
     * [upload_set_form_field](#upload_set_form_field)
     * [upload_aggregate_form_field](#upload_aggregate_form_field)
+    * [upload_pass_form_field_default](#upload_pass_form_field_default)
     * [upload_pass_form_field](#upload_pass_form_field)
     * [upload_cleanup](#upload_cleanup)
     * [upload_buffer_size](#upload_buffer_size)
@@ -169,6 +170,16 @@ upload_aggregate_form_field $upload_field_name.size "$upload_file_size";
 
 ```
 
+### upload_pass_form_field_default
+
+**Syntax:** <code><b>upload_pass_form_field_default</b> on | off</code><br>
+**Default:** `upload_pass_form_field_default off`<br>
+**Context:** `main,server,location`
+
+Specifies whether fields will be passed to backend from original request
+body by default or not. By default, they will not be passed unless there
+is a match with [upload_pass_form_field](#upload_pass_form_field).
+
 ### upload_pass_form_field
 
 **Syntax:** <code><b>upload_pass_form_field</b> <i>regex</i></code><br>
@@ -180,7 +191,8 @@ backend from original request body. This directive could be specified
 multiple times per location. Field will be passed to backend as soon as
 first pattern matches. For PCRE-unaware enviroments this directive
 specifies exact name of a field to pass to backend. If directive is
-omitted, no fields will be passed to backend from client.
+omitted, fields will be passed to backend from client depending on the
+value of [upload_pass_form_field_default](#upload_pass_form_field_default).
 
 Usage example:
 
