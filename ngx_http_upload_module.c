@@ -1573,7 +1573,7 @@ static ngx_int_t ngx_http_upload_start_handler(ngx_http_upload_ctx_t *u) { /* {{
                 /*
                  * If at least one filter succeeds, we pass the field
                  */
-                if(rc == 0)
+                if(rc >= 0)
                     pass_field = 1;
 #else
                 if(ngx_strncmp(f[i].text.data, u->field_name.data, u->field_name.len) == 0)
